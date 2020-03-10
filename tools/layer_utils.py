@@ -1,5 +1,6 @@
 import numpy as np
-import tensorflow as tf
+# import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import tensorflow.contrib as tf_contrib
 # from tools.ops import *
 
@@ -328,7 +329,9 @@ def fully_connected(input_, output_size, scope = 'fully_connected', if_bias=True
 if __name__ == "__main__":
     import binvox_rw
     from binvox_checker import  visualise_voxel
-    import tensorflow as tf
+    # import tensorflow as tf
+    import tensorflow.compat.v1 as tf
+
 
     with open(r"D:\Data_sets\ShapeNetCore_v2\ShapeNet64_Chair\ShapeNet64_Chair_binvox_3_centered\model_normalized_25_clean.binvox",
             'rb') as fp:

@@ -1,5 +1,6 @@
 from .utils import *
-import tensorflow as tf
+# import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import numpy as np
 try:
   image_summary = tf.image_summary

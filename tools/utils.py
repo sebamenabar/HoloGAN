@@ -10,12 +10,14 @@ from PIL import Image
 import random
 import pprint
 import scipy.misc
+from skimage.transform import resize as imresize
 import numpy as np
 
 from tools.rotation_utils import *
 
 
-import tensorflow as tf
+# import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import tensorflow.contrib.slim as slim
 import glob
 import os
@@ -38,8 +40,8 @@ def get_image(image_path, input_height, input_width,
                    resize_height, resize_width, crop)
 
 def load_webp(img_path):
-    im = Image.open(img_path)
-    return np.asarray(im)
+    im = Image.open(img_path).convert('RGB')
+    return np.asarray(im) / 255
 
 
 def merge(images, size):
@@ -71,20 +73,20 @@ def center_crop(x, crop_h, crop_w,
   h, w = x.shape[:2]
   j = int(round((h - crop_h)/2.))
   i = int(round((w - crop_w)/2.))
-  return scipy.misc.imresize(
+  return imresize(
       x[j:j+crop_h, i:i+crop_w], [resize_h, resize_w])
 
 def transform(image, input_height, input_width,
-              resize_height=64, resize_width=64, crop=True):
+              resize_height=64, resize_width=64, crop=False):
   if crop:
     cropped_image = center_crop(
       image, input_height, input_width,
       resize_height, resize_width)
   else:
-    cropped_image = scipy.misc.imresize(image, [resize_height, resize_width])
+    cropped_image = imresize(image, [resize_height, resize_width])
   if len(cropped_image.shape) != 3: #In case of binary mask with no channels:
     cropped_image = np.expand_dims(cropped_image, -1)
-  return np.array(cropped_image)[:, :, :3]/127.5 - 1.
+  return (np.array(cropped_image) * 2) - 1
 
 def inverse_transform(images):
   return (images+1.)/2.

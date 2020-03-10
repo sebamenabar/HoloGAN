@@ -12,7 +12,7 @@ IMAGE_PATH       = cfg['image_path']
 OUTPUT_DIR = cfg['output_dir']
 LOGDIR = os.path.join(OUTPUT_DIR, "log")
 
-
+from imageio import imwrite as imsave
 from tools.ops import *
 from tools.utils import get_image, merge, inverse_transform, to_bool
 from tools.rotation_utils import *
@@ -22,10 +22,10 @@ from tools.model_utils import transform_voxel_to_match_image
 #----------------------------------------------------------------------------
 
 class HoloGAN(object):
-  def __init__(self, sess, input_height=108, input_width=108, crop=True,
+  def __init__(self, sess, input_height=108, input_width=108, crop=False,
          output_height=64, output_width=64,
          gf_dim=64, df_dim=64,
-         c_dim=3, dataset_name='lsun',
+         c_dim=3, dataset_name='clevr',
          input_fname_pattern='*.webp'):
 
     self.sess = sess
@@ -52,6 +52,8 @@ class HoloGAN(object):
   def build_HoloGAN(self):
     self.view_in = tf.placeholder(tf.float32, [None, 6], name='view_in')
     self.inputs = tf.placeholder(tf.float32, [None, self.output_height, self.output_width, self.c_dim], name='real_images')
+    # self.foreground_base = tf.placeholder(tf.float32, [None, 4, 4, 4, 512], name='foreground_base')
+    # self.background_base = tf.placeholder(tf.float32, [None, 4, 4, 4, 256], name='background_base')
     self.z = tf.placeholder(tf.float32, [None, cfg['z_dim']], name='z')
     inputs = self.inputs
 
@@ -145,16 +147,29 @@ class HoloGAN(object):
                                     input_width=self.input_width,
                                     resize_height=self.output_height,
                                     resize_width=self.output_width,
-                                    crop=False) for sample_file in sample_files]
+                                    crop=self.crop) for sample_file in sample_files]
       else:
           sample_images = [get_image(sample_file,
                                     input_height=self.input_height,
                                     input_width=self.input_width,
                                     resize_height=self.output_height,
                                     resize_width=self.output_width,
-                                    crop=True) for sample_file in sample_files]
+                                    crop=self.crop) for sample_file in sample_files]
 
-      counter = 1
+      ## TEMP
+      batch_images = sample_images
+      batch_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
+      batch_view = self.gen_view_func(cfg['batch_size'],
+                                cfg['ele_low'], cfg['ele_high'],
+                                cfg['azi_low'], cfg['azi_high'],
+                                cfg['scale_low'], cfg['scale_high'],
+                                cfg['x_low'], cfg['x_high'],
+                                cfg['y_low'], cfg['y_high'],
+                                cfg['z_low'], cfg['z_high'],
+                                with_translation=False,
+                                with_scale=to_bool(str(cfg['with_translation'])))
+
+      counter = 0
       start_time = time.time()
       could_load, checkpoint_counter = self.load(self.checkpoint_dir)
       if could_load:
@@ -175,31 +190,31 @@ class HoloGAN(object):
 
           for idx in range(0, batch_idxs):
               batch_files = self.data[idx * cfg['batch_size']:(idx + 1) * cfg['batch_size']]
-              if config.dataset == "cats" or config.dataset == "cars":
-                  batch_images = [get_image(batch_file,
-                                    input_height=self.input_height,
-                                    input_width=self.input_width,
-                                    resize_height=self.output_height,
-                                    resize_width=self.output_width,
-                                    crop=False) for batch_file in batch_files]
-              else:
-                  batch_images = [get_image(batch_file,
-                                    input_height=self.input_height,
-                                    input_width=self.input_width,
-                                    resize_height=self.output_height,
-                                    resize_width=self.output_width,
-                                    crop=self.crop) for batch_file in batch_files]
+              # if config.dataset == "cats" or config.dataset == "cars":
+              #     batch_images = [get_image(batch_file,
+              #                       input_height=self.input_height,
+              #                       input_width=self.input_width,
+              #                       resize_height=self.output_height,
+              #                       resize_width=self.output_width,
+              #                       crop=self.crop) for batch_file in batch_files]
+              # else:
+              #     batch_images = [get_image(batch_file,
+              #                       input_height=self.input_height,
+              #                       input_width=self.input_width,
+              #                       resize_height=self.output_height,
+              #                       resize_width=self.output_width,
+              #                       crop=self.crop) for batch_file in batch_files]
 
-              batch_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
-              batch_view = self.gen_view_func(cfg['batch_size'],
-                                       cfg['ele_low'], cfg['ele_high'],
-                                       cfg['azi_low'], cfg['azi_high'],
-                                       cfg['scale_low'], cfg['scale_high'],
-                                       cfg['x_low'], cfg['x_high'],
-                                       cfg['y_low'], cfg['y_high'],
-                                       cfg['z_low'], cfg['z_high'],
-                                       with_translation=False,
-                                       with_scale=to_bool(str(cfg['with_translation'])))
+              # batch_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
+              # batch_view = self.gen_view_func(cfg['batch_size'],
+              #                          cfg['ele_low'], cfg['ele_high'],
+              #                          cfg['azi_low'], cfg['azi_high'],
+              #                          cfg['scale_low'], cfg['scale_high'],
+              #                          cfg['x_low'], cfg['x_high'],
+              #                          cfg['y_low'], cfg['y_high'],
+              #                          cfg['z_low'], cfg['z_high'],
+              #                          with_translation=False,
+              #                          with_scale=to_bool(str(cfg['with_translation'])))
 
               feed = {self.inputs: batch_images,
                       self.z: batch_z,
@@ -221,33 +236,56 @@ class HoloGAN(object):
               errG = self.g_loss.eval(feed)
               errQ = self.q_loss.eval(feed)
 
-              counter += 1
               print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f" \
                     % (epoch, idx, batch_idxs,
                        time.time() - start_time, errD_fake + errD_real, errG, errQ))
 
-              if np.mod(counter, 1000) == 1:
-                  self.save(LOGDIR, counter)
+              if np.mod(counter, 50) == 0:
+                  # self.save(LOGDIR, counter)
                   feed_eval = {self.inputs: sample_images,
                                self.z: sample_z,
                                self.view_in: sample_view,
                                self.d_lr_in: d_lr,
                                self.g_lr_in: g_lr}
+
+                  print(feed_eval)
+
                   samples, d_loss, g_loss = self.sess.run(
                       [self.G, self.d_loss, self.g_loss],
                       feed_dict=feed_eval)
+
+                  # print('real images')
+                  # print(sample_images)
+                  # print('generated')
+                  # print(samples)
+
+
+                  print('samples', samples)
                   ren_img = inverse_transform(samples)
+                  print('ren img', ren_img)
                   ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
+                  print('inv img', ren_img)
+                  # real_img = inverse_transform(np.array(sample_images))
+                  # real_img = np.clip(255 * real_img, 0, 255).astype(np.uint8)
+
                   try:
-                      scipy.misc.imsave(
+                      imsave(
                           os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)),
                           merge(ren_img, [cfg['batch_size'] // 4, 4]))
-                      print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
+                      # imsave(
+                      #     os.path.join(OUTPUT_DIR, "{0}_reals_GAN.png".format(counter)),
+                      #     merge(real_img, [cfg['batch_size'] // 4, 4]))
+                      # print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
                   except:
-                      scipy.misc.imsave(
+                      imsave(
                           os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)),
                           ren_img[0])
-                      print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
+                      # imsave(
+                      #     os.path.join(OUTPUT_DIR, "{0}_reals_GAN.png".format(counter)),
+                      #     real_img[0])
+                      # print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
+              counter += 1
+      self.save(LOGDIR, counter)
 
   def sample_HoloGAN(self, config):
       could_load, checkpoint_counter = self.load(self.checkpoint_dir)
@@ -310,6 +348,7 @@ class HoloGAN(object):
 #=======================================================================================================================
 
   def sampling_Z(self, z_dim, type="uniform"):
+      return np.zeros((cfg['batch_size'], z_dim))
       if str.lower(type) == "uniform":
           return np.random.uniform(-1., 1., (cfg['batch_size'], z_dim))
       else:
@@ -462,6 +501,7 @@ class HoloGAN(object):
           h6 = deconv2d(h5, [batch_size, s_h, s_w, self.c_dim], k_h=4, k_w=4, d_h=1, d_w=1, name='g_h6')
 
           output = tf.nn.tanh(h6, name="output")
+          # output = tf.nn.sigmoid(h6, name="output")
           return output
 
   def generator_AdaIN_res128(self, z, view_in, reuse=False):
@@ -528,6 +568,7 @@ class HoloGAN(object):
           h7 = deconv2d(h6, [batch_size, s_h * 2, s_w * 2, self.c_dim], k_h=4, k_w=4, d_h=1, d_w=1, name='g_h7')
 
           output = tf.nn.tanh(h7, name="output")
+          # output = tf.nn.sigmoid(h7, name="output")
           return output
 
 #=======================================================================================================================
