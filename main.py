@@ -11,7 +11,7 @@ with open(sys.argv[1], 'r') as fh:
 OUTPUT_DIR = cfg['output_dir']
 LOGDIR = os.path.join(OUTPUT_DIR, "log")
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "{0}".format(cfg['gpu'])
+# os.environ["CUDA_VISIBLE_DEVICES"] = "{0}".format(cfg['gpu'])
 from model_HoloGAN import HoloGAN
 from tools.utils import pp, show_all_variables
 
@@ -19,8 +19,8 @@ from tools.utils import pp, show_all_variables
 flags = tf.app.flags
 flags.DEFINE_integer("input_height", 64, "The size of image to use (will be center cropped). [108] or [128] for celebA and lsun, [400] for chairs. Cats and Cars are already cropped")
 flags.DEFINE_integer("input_width", None, "The size of image to use (will be center cropped). If None, same value as input_height [None]")
-flags.DEFINE_integer("output_height", 64, "The size of the output images to produce 64 or 128")
-flags.DEFINE_integer("output_width", None, "The size of the output images to produce. If None, same value as output_height [None]")
+flags.DEFINE_integer("output_height", 320, "The size of the output images to produce 64 or 128")
+flags.DEFINE_integer("output_width", 480, "The size of the output images to produce. If None, same value as output_height [None]")
 flags.DEFINE_string("dataset", "clevr", "The name of dataset [celebA, lsun, chairs, shoes, cars, cats]")
 flags.DEFINE_string("input_fname_pattern", "*.png", "Glob pattern of filename of input images [*]")
 flags.DEFINE_float("train_size", np.inf, "Number of images to train-Useful when only a subset of the dataset is needed to train the model")

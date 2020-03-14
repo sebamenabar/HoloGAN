@@ -4,6 +4,7 @@ import sys
 from glob import glob
 import json
 import shutil
+from datetime import datetime as dt
 
 
 with open(sys.argv[1], 'r') as fh:
@@ -23,7 +24,7 @@ from tools.model_utils import transform_voxel_to_match_image
 
 class HoloGAN(object):
   def __init__(self, sess, input_height=108, input_width=108, crop=False,
-         output_height=64, output_width=64,
+         output_height=128, output_width=128,
          gf_dim=64, df_dim=64,
          c_dim=3, dataset_name='clevr',
          input_fname_pattern='*.webp'):
@@ -46,40 +47,61 @@ class HoloGAN(object):
     self.checkpoint_dir = LOGDIR
 
   def build(self, build_func_name):
-      build_func = eval("self." + build_func_name)
+      build_func = None
+      if build_func_name == 'build_HoloGAN':
+          build_func = self.build_HoloGAN
       build_func()
 
   def build_HoloGAN(self):
-    self.view_in = tf.placeholder(tf.float32, [None, 6], name='view_in')
+    # view_in_bg: Background transformation params [bsz, (azimuth y-rot, elevation x-rot, z-rot, scale, tx, ty, tx)]
+    self.view_in_bg = tf.placeholder(tf.float32, [None, 6], name='view_in_bg')
+    # view_in_fg: Foreground transform params [bsz, num_obects, params(6)]
+    self.view_in_fg = tf.placeholder(tf.float32, [None, None, 6], name='view_in_fg')
+    # inputs: for real images
     self.inputs = tf.placeholder(tf.float32, [None, self.output_height, self.output_width, self.c_dim], name='real_images')
-    # self.foreground_base = tf.placeholder(tf.float32, [None, 4, 4, 4, 512], name='foreground_base')
-    # self.background_base = tf.placeholder(tf.float32, [None, 4, 4, 4, 256], name='background_base')
-    self.z = tf.placeholder(tf.float32, [None, cfg['z_dim']], name='z')
+    # z_bg: 
+    self.z_bg = tf.placeholder(tf.float32, [None, cfg['z_dim_bg']], name='z_bg')
+    # z_fg:
+    self.z_fg = tf.placeholder(tf.float32, [None, None, cfg['z_dim_fg']], name='z_fg')
+
     inputs = self.inputs
 
-    gen_func = eval("self." + (cfg['generator']))
-    dis_func = eval("self." + (cfg['discriminator']))
-    self.gen_view_func = eval(cfg['view_func'])
+    funcs = {
+        'generator_AdaIN': self.generator_AdaIN,
+        'generator_AdaIN_res128': self.generator_AdaIN_res128,
+        'discriminator_IN': self.discriminator_IN,
+        'discriminator_IN_style_res128': self.discriminator_IN_style_res128,
+        'train_HoloGAN': self.train_HoloGAN,
+        'generate_random_rotation_translation': generate_random_rotation_translation,
+    }
+    # gen_func = eval("self." + (cfg['generator']))
+    # dis_func = eval("self." + (cfg['discriminator']))
+    # self.gen_view_func = eval(cfg['view_func'])
+    gen_func = funcs[cfg['generator']]
+    dis_func = funcs[cfg['discriminator']]
+    self.gen_view_func = funcs[cfg['view_func']]
 
-    self.G = gen_func(self.z, self.view_in)
+    self.G = gen_func(self.z_bg, self.z_fg, self.view_in_bg, self.view_in_fg)
 
     if str.lower(str(cfg["style_disc"])) == "true":
         print("Style Disc")
-        self.D, self.D_logits, _, self.d_h1_r, self.d_h2_r, self.d_h3_r, self.d_h4_r = dis_func(inputs, cont_dim=cfg['z_dim'], reuse=False)
-        self.D_, self.D_logits_, self.Q_c_given_x, self.d_h1_f, self.d_h2_f, self.d_h3_f, self.d_h4_f = dis_func(self.G, cont_dim=cfg['z_dim'], reuse=True)
+        # self.D, self.D_logits, _, self.d_h1_r, self.d_h2_r, self.d_h3_r, self.d_h4_r = dis_func(inputs, cont_dim=cfg['z_dim'], reuse=False)
+        self.D, self.D_logits = dis_func(inputs, cont_dim=cfg['z_dim_fg'], reuse=False)
+        # self.D_, self.D_logits_, self.Q_c_given_x, self.d_h1_f, self.d_h2_f, self.d_h3_f, self.d_h4_f = dis_func(self.G, cont_dim=cfg['z_dim'], reuse=True)
+        self.D_, self.D_logits_ = dis_func(self.G, cont_dim=cfg['z_dim_fg'], reuse=True)
 
-        self.d_h1_loss = cfg["DStyle_lambda"] * (
-                    tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h1_r, tf.ones_like(self.d_h1_r))) \
-                    + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h1_f, tf.zeros_like(self.d_h1_f))))
-        self.d_h2_loss = cfg["DStyle_lambda"] * (
-                    tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h2_r, tf.ones_like(self.d_h2_r))) \
-                    + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h2_f, tf.zeros_like(self.d_h2_f))))
-        self.d_h3_loss = cfg["DStyle_lambda"] * (
-                    tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h3_r, tf.ones_like(self.d_h3_r))) \
-                    + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h3_f, tf.zeros_like(self.d_h3_f))))
-        self.d_h4_loss = cfg["DStyle_lambda"] * (
-                    tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h4_r, tf.ones_like(self.d_h4_r))) \
-                    + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h4_f, tf.zeros_like(self.d_h4_f))))
+        # self.d_h1_loss = cfg["DStyle_lambda"] * (
+        #             tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h1_r, tf.ones_like(self.d_h1_r))) \
+        #             + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h1_f, tf.zeros_like(self.d_h1_f))))
+        # self.d_h2_loss = cfg["DStyle_lambda"] * (
+        #             tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h2_r, tf.ones_like(self.d_h2_r))) \
+        #             + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h2_f, tf.zeros_like(self.d_h2_f))))
+        # self.d_h3_loss = cfg["DStyle_lambda"] * (
+        #             tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h3_r, tf.ones_like(self.d_h3_r))) \
+        #             + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h3_f, tf.zeros_like(self.d_h3_f))))
+        # self.d_h4_loss = cfg["DStyle_lambda"] * (
+        #             tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h4_r, tf.ones_like(self.d_h4_r))) \
+        #             + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h4_f, tf.zeros_like(self.d_h4_f))))
     else:
         self.D, self.D_logits, _ = dis_func(inputs, cont_dim=cfg['z_dim'], reuse=False)
         self.D_, self.D_logits_, self.Q_c_given_x = dis_func(self.G, cont_dim=cfg['z_dim'], reuse=True)
@@ -97,9 +119,11 @@ class HoloGAN(object):
     #====================================================================================================================
     #Identity loss
 
-    self.q_loss = cfg["lambda_latent"] * tf.reduce_mean(tf.square(self.Q_c_given_x - self.z))
-    self.d_loss = self.d_loss + self.q_loss
-    self.g_loss = self.g_loss + self.q_loss
+    ## TODO fix identity loss
+    # self.q_loss = cfg["lambda_latent"] * tf.reduce_mean(tf.square(self.Q_c_given_x - self.z))
+    # self.d_loss = self.d_loss + self.q_loss
+    ## TEMP why is g_loss
+    # self.g_loss = self.g_loss + self.q_loss
 
 
     self.d_loss_real_sum = scalar_summary("d_loss_real", self.d_loss_real)
@@ -126,7 +150,7 @@ class HoloGAN(object):
       shutil.copyfile(sys.argv[1], os.path.join(LOGDIR, 'config.json'))
       self.g_sum = merge_summary([self.d_loss_fake_sum, self.g_loss_sum])
       self.d_sum = merge_summary([self.d_loss_real_sum, self.d_loss_sum])
-      self.writer = SummaryWriter(LOGDIR, self.sess.graph)
+      self.writer = SummaryWriter(os.path.join(LOGDIR, str(dt.now())), self.sess.graph)
 
       # Sample noise Z and view parameters to test during training
       sample_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
@@ -240,7 +264,7 @@ class HoloGAN(object):
                     % (epoch, idx, batch_idxs,
                        time.time() - start_time, errD_fake + errD_real, errG, errQ))
 
-              if np.mod(counter, 50) == 0:
+              if np.mod(counter, 100) == 0:
                   # self.save(LOGDIR, counter)
                   feed_eval = {self.inputs: sample_images,
                                self.z: sample_z,
@@ -248,27 +272,16 @@ class HoloGAN(object):
                                self.d_lr_in: d_lr,
                                self.g_lr_in: g_lr}
 
-                  print(feed_eval)
-
                   samples, d_loss, g_loss = self.sess.run(
                       [self.G, self.d_loss, self.g_loss],
                       feed_dict=feed_eval)
-
-                  # print('real images')
-                  # print(sample_images)
-                  # print('generated')
-                  # print(samples)
-
-
-                  print('samples', samples)
                   ren_img = inverse_transform(samples)
-                  print('ren img', ren_img)
                   ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
-                  print('inv img', ren_img)
                   # real_img = inverse_transform(np.array(sample_images))
                   # real_img = np.clip(255 * real_img, 0, 255).astype(np.uint8)
 
                   try:
+                      self.writer.add_summary(tf.summary.image("{0}_GAN.png".format(counter), ren_img).eval(), counter)
                       imsave(
                           os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)),
                           merge(ren_img, [cfg['batch_size'] // 4, 4]))
@@ -277,6 +290,7 @@ class HoloGAN(object):
                       #     merge(real_img, [cfg['batch_size'] // 4, 4]))
                       # print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
                   except:
+                      self.writer.add_summary(tf.summary.image("{0}_GAN.png".format(counter), ren_img[:1]).eval(), counter)
                       imsave(
                           os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)),
                           ren_img[0])
@@ -348,7 +362,7 @@ class HoloGAN(object):
 #=======================================================================================================================
 
   def sampling_Z(self, z_dim, type="uniform"):
-      return np.zeros((cfg['batch_size'], z_dim))
+      return np.ones((cfg['batch_size'], z_dim))
       if str.lower(type) == "uniform":
           return np.random.uniform(-1., 1., (cfg['batch_size'], z_dim))
       else:
@@ -396,7 +410,7 @@ class HoloGAN(object):
 
           return tf.nn.sigmoid(h4), h4, tf.nn.tanh(cont_vars)
 
-  def discriminator_IN_style_res128(self, image,  cont_dim, reuse=False):
+  def discriminator_IN_style_res128(self, image, cont_dim, reuse=False):
       batch_size = tf.shape(image)[0]
       if str(cfg["add_D_noise"]) == "true":
           image = image + tf.random_normal(tf.shape(image), stddev=0.02)
@@ -409,44 +423,45 @@ class HoloGAN(object):
 
           h1 = conv2d_specNorm(h0, self.df_dim * 2, name='d_h1_conv')
           h1, h1_mean, h1_var = instance_norm(h1, 'd_in1', True)
-          h1_mean = tf.reshape(h1_mean, (batch_size, self.df_dim * 2))
-          h1_var = tf.reshape(h1_var, (batch_size, self.df_dim * 2))
-          d_h1_style = tf.concat([h1_mean, h1_var], 0)
-          d_h1, d_h1_logits = self.linear_classifier(d_h1_style, "d_h1_class")
+          # h1_mean = tf.reshape(h1_mean, (batch_size, self.df_dim * 2))
+          # h1_var = tf.reshape(h1_var, (batch_size, self.df_dim * 2))
+          # d_h1_style = tf.concat([h1_mean, h1_var], 0)
+          # d_h1, d_h1_logits = self.linear_classifier(d_h1_style, "d_h1_class")
           h1 = lrelu(h1)
 
           h2 = conv2d_specNorm(h1, self.df_dim * 4, name='d_h2_conv')
           h2, h2_mean, h2_var = instance_norm(h2, 'd_in2', True)
-          h2_mean = tf.reshape(h2_mean, (batch_size, self.df_dim * 4))
-          h2_var = tf.reshape(h2_var, (batch_size, self.df_dim * 4))
-          d_h2_style = tf.concat([h2_mean, h2_var], 0)
-          d_h2, d_h2_logits = self.linear_classifier(d_h2_style, "d_h2_class")
+          # h2_mean = tf.reshape(h2_mean, (batch_size, self.df_dim * 4))
+          # h2_var = tf.reshape(h2_var, (batch_size, self.df_dim * 4))
+          # d_h2_style = tf.concat([h2_mean, h2_var], 0)
+          # d_h2, d_h2_logits = self.linear_classifier(d_h2_style, "d_h2_class")
           h2 = lrelu(h2)
 
           h3 = conv2d_specNorm(h2, self.df_dim * 8, name='d_h3_conv')
           h3, h3_mean, h3_var = instance_norm(h3, 'd_in3', True)
-          h3_mean = tf.reshape(h3_mean, (batch_size, self.df_dim * 8))
-          h3_var = tf.reshape(h3_var, (batch_size, self.df_dim * 8))
-          d_h3_style = tf.concat([h3_mean, h3_var], 0)
-          d_h3, d_h3_logits = self.linear_classifier(d_h3_style, "d_h3_class")
+          # h3_mean = tf.reshape(h3_mean, (batch_size, self.df_dim * 8))
+          # h3_var = tf.reshape(h3_var, (batch_size, self.df_dim * 8))
+          # d_h3_style = tf.concat([h3_mean, h3_var], 0)
+          # d_h3, d_h3_logits = self.linear_classifier(d_h3_style, "d_h3_class")
           h3 = lrelu(h3)
 
           h4 = conv2d_specNorm(h3, self.df_dim * 16, name='d_h4_conv')
           h4, h4_mean, h4_var = instance_norm(h4, 'd_in4', True)
-          h4_mean = tf.reshape(h4_mean, (batch_size, self.df_dim * 16))
-          h4_var = tf.reshape(h4_var, (batch_size, self.df_dim * 16))
-          d_h4_style = tf.concat([h4_mean, h4_var], 0)
-          d_h4, d_h4_logits = self.linear_classifier(d_h4_style, "d_h4_class")
+          # h4_mean = tf.reshape(h4_mean, (batch_size, self.df_dim * 16))
+          # h4_var = tf.reshape(h4_var, (batch_size, self.df_dim * 16))
+          # d_h4_style = tf.concat([h4_mean, h4_var], 0)
+          # d_h4, d_h4_logits = self.linear_classifier(d_h4_style, "d_h4_class")
           h4 = lrelu(h4)
 
           #Returning logits to determine whether the images are real or fake
           h5 = linear(slim.flatten(h4), 1, 'd_h5_lin')
 
           # Recognition network for latent variables has an additional layer
-          encoder = lrelu((linear(slim.flatten(h4), 128, 'd_latent')))
-          cont_vars = linear(encoder, cont_dim, "d_latent_prediction")
+          # encoder = lrelu((linear(slim.flatten(h4), 128, 'd_latent')))
+          # cont_vars = linear(encoder, cont_dim, "d_latent_prediction")
 
-          return tf.nn.sigmoid(h5), h5, tf.nn.tanh(cont_vars), d_h1_logits, d_h2_logits, d_h3_logits, d_h4_logits
+          # return tf.nn.sigmoid(h5), h5, tf.nn.tanh(cont_vars), d_h1_logits, d_h2_logits, d_h3_logits, d_h4_logits
+          return tf.nn.sigmoid(h5), h5
 
   def generator_AdaIN(self, z, view_in, reuse=False):
       batch_size = tf.shape(z)[0]
@@ -504,8 +519,114 @@ class HoloGAN(object):
           # output = tf.nn.sigmoid(h6, name="output")
           return output
 
-  def generator_AdaIN_res128(self, z, view_in, reuse=False):
-      batch_size = tf.shape(z)[0]
+  def object_generator(self, z, view_in, obj_type, reuse=False):
+      gf_dim = None
+      variable_scope_name = None
+      if obj_type == 'fg':
+        variable_scope_name = 'fg_object_generator'
+        w_dim = self.gf_dim # 64
+      elif obj_type == 'bg':
+        variable_scope_name = 'bg_object_generator'
+        w_dim = self.gf_dim / 2 # 32
+
+      batch_size, num_objs, z_dim = tf.shape(z)
+      s_h, s_w, s_d = 64, 64, 64 # height, width, depth of something
+      s_h2, s_w2, s_d2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2), conv_out_size_same(s_d, 2)
+      s_h4, s_w4, s_d4 = conv_out_size_same(s_h2, 2), conv_out_size_same(s_w2, 2), conv_out_size_same(s_d2, 2)
+      s_h8, s_w8, s_d8 = conv_out_size_same(s_h4, 2), conv_out_size_same(s_w4, 2), conv_out_size_same(s_d4, 2)
+      s_h16, s_w16, s_d16 = conv_out_size_same(s_h8, 2), conv_out_size_same(s_w8, 2), conv_out_size_same(s_d8, 2)
+
+      with tf.variable_scope(variable_scope_name) as scope:
+        if reuse:
+          scope.reuse_variables()
+        
+        with tf.variable_scope('g_w_constant') as scope:
+          w = tf.get_variable('w', [s_h16, s_w16, s_d16, w_dim * 8], initializer=tf.random_normal_initializer(stddev=0.02))
+          w_tile = tf.tile(tf.reshape(w, (1, 1, *tf.shape(w))), (batch_size, num_objs, 1, 1, 1, 1)) #Repeat the learnt constant features to make a batch
+          
+          # reshape all objects of al samples as one big batch
+          w_tile = tf.reshape(w_tile, (batch_size * num_objs, *tf.shape(w))) # (bsz, num_objects, h, w, d, c) -> (bsz * num_objects, h, w, d, c)
+          z = tf.reshape(z, (batch_size * num_objs, z_dim)) # (bsz, num_objects, z_dim) -> (bsz * num_objects, z_dim)
+
+          s0, b0 = self.z_mapping_function(z, self.gf_dim * 8, 'g_z0')
+          h0 = AdaIn(w_tile, s0, b0)
+          h0 = lrelu(h0)
+
+        h1= deconv3d(h0, [batch_size, s_h8, s_w8, s_d8, self.gf_dim * 2], k_h=3, k_w=3, k_d=3, name='g_h1')
+        s1, b1 = self.z_mapping_function(z, self.gf_dim * 2, 'g_z1')
+        h1 = AdaIn(h1, s1, b1)
+        h1 = lrelu(h1)
+
+        h2 = deconv3d(h1, [batch_size, s_h4, s_w4, s_d4, self.gf_dim * 1],  k_h=3, k_w=3, k_d=3, name='g_h2')
+        s2, b2 = self.z_mapping_function(z, self.gf_dim * 1, 'g_z2')
+        h2 = AdaIn(h2, s2, b2)
+        h2 = lrelu(h2)
+
+        h2_rotated = tf_3D_transform(h2, view_in, 16, 16)
+        h2_rotated = transform_voxel_to_match_image(h2_rotated)
+        h2_out = h2_rotated
+
+        h2_proj1 = deconv3d(h2_rotated, [batch_size, s_h4, s_w4, s_d4, self.gf_dim], k_h=3, k_w=3, k_d=3, d_h=1, d_w=1, d_d=1, name='g_h2_proj1')
+        h2_proj1 = lrelu( h2_proj1)
+
+        h2_proj2 = deconv3d(h2_proj1, [batch_size, s_h4, s_w4, s_d4, self.gf_dim ], k_h=3, k_w=3, k_d=3, d_h=1, d_w=1, d_d=1,  name='g_h2_proj2')
+        h2_proj2 = lrelu( h2_proj2)
+        h2_out = h2_proj2
+
+        # expand objects
+        return tf.reshape(h2_out, (batch_size, num_objs, *tf.shape(h2_out)[2:]))
+
+
+  def generator_AdaIN_block(self, z_bg, z_fg, view_in_bg, view_in_fg, reuse=False):
+      bsz, num_objs_bg, z_dim_bg = tf.shape(z_bg)
+      _, num_objs_fg, z_dim_fg = tf.shape(z_fg)
+
+      s_h, s_w, s_d = 64, 64, 64
+      s_h2, s_w2, s_d2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2), conv_out_size_same(s_d, 2)
+      s_h4, s_w4, s_d4 = conv_out_size_same(s_h2, 2), conv_out_size_same(s_w2, 2), conv_out_size_same(s_d2, 2)
+      s_h8, s_w8, s_d8 = conv_out_size_same(s_h4, 2), conv_out_size_same(s_w4, 2), conv_out_size_same(s_d4, 2)
+      s_h16, s_w16, s_d16 = conv_out_size_same(s_h8, 2), conv_out_size_same(s_w8, 2), conv_out_size_same(s_d8, 2)
+
+      with tf.variable_scope("generator") as scope:
+          if reuse:
+              scope.reuse_variables()
+
+          h2_rotated_bg = self.object_generator(z_bg, view_in_bg, 'bg', reuse)
+          h2_rotated_fg = self.object_generator(z_fg, view_in_fg, 'fg', reuse)
+          h2_rotated = tf.concat((h2_rotated_bg, h2_rotated_fg), axis=1, name='h2_rotated')
+          h2_rotated_agg = tf.math.reduce_max(h2_rotated, axis=1, name='h2_rotated_agg')
+          h2_2d = tf.reshape(h2_rotated_agg, [bsz, s_h4, s_w4, s_d4 * self.gf_dim])
+
+          # 1X1 convolution
+          h3 = deconv2d(h2_2d, [bsz, s_h4, s_w4, self.gf_dim], k_h=1, k_w=1, d_h=1, d_w=1, name='g_h3')
+          h3 = lrelu(h3)
+
+          h4  = deconv2d(h3, [bsz, s_h2, s_w2, self.gf_dim],  k_h=4, k_w=4, name='g_h4')
+          # s4, b4 = self.z_mapping_function(z, self.gf_dim, 'g_z4')
+          # h4  = AdaIn(h4, s4, b4)
+          h4 = lrelu(h4)
+
+          h5 = deconv2d(h4, [bsz, s_h, s_w, self.gf_dim], k_h=4, k_w=4, name='g_h5')
+          # s5, b5 = self.z_mapping_function(z, self.gf_dim, 'g_z5')
+          # h5 = AdaIn(h5, s5, b5)
+          h5 = lrelu(h5)
+
+          h6 = deconv2d(h5, [bsz, s_h * 2, s_w * 2, self.gf_dim], k_h=4, k_w=4, name='g_h6')
+          # s6, b6 = self.z_mapping_function(z, self.gf_dim // 2, 'g_z6')
+          # h6 = AdaIn(h6, s6, b6)
+          h6 = lrelu(h6)
+
+          h7 = deconv2d(h6, [bsz, s_h * 2, s_w * 2, self.c_dim], k_h=4, k_w=4, d_h=1, d_w=1, name='g_h7')
+
+          output = tf.nn.tanh(h7, name="output")
+          # output = tf.nn.sigmoid(h7, name="output")
+          return output
+
+
+  def generator_AdaIN_res128(self, z_bg, z_fg, view_in_bg, view_in_fg, reuse=False):
+      batch_size, num_objs_bg, z_dim_bg = tf.shape(z_bg)
+      _, num_objs_fg, z_dim_fg = tf.shape(z_fg)
+
       s_h, s_w, s_d = 64, 64, 64
       s_h2, s_w2, s_d2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2), conv_out_size_same(s_d, 2)
       s_h4, s_w4, s_d4 = conv_out_size_same(s_h2, 2), conv_out_size_same(s_w2, 2), conv_out_size_same(s_d2, 2)
@@ -523,7 +644,7 @@ class HoloGAN(object):
               h0 = AdaIn(w_tile, s0, b0)
               h0 = lrelu(h0)
 
-          h1= deconv3d(h0, [batch_size, s_h8, s_w8, s_d8, self.gf_dim * 4], k_h=3, k_w=3, k_d=3, name='g_h1')
+          h1 = deconv3d(h0, [batch_size, s_h8, s_w8, s_d8, self.gf_dim * 4], k_h=3, k_w=3, k_d=3, name='g_h1')
           s1, b1 = self.z_mapping_function(z, self.gf_dim * 4, 'g_z1')
           h1 = AdaIn(h1, s1, b1)
           h1 = lrelu(h1)
