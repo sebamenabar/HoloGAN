@@ -56,11 +56,11 @@ class HoloGAN(object):
     # view_in_bg: Background transformation params [bsz, (azimuth y-rot, elevation x-rot, z-rot, scale, tx, ty, tx)]
     self.view_in_bg = tf.placeholder(tf.float32, [None, 6], name='view_in_bg')
     # view_in_fg: Foreground transform params [bsz, num_obects, params(6)]
-    self.view_in_fg = tf.placeholder(tf.float32, [None, None, 6], name='view_in_fg')
+    self.view_in_fg = tf.placeholder(tf.float32, [None, 6], name='view_in_fg')
     # inputs: for real images
     self.inputs = tf.placeholder(tf.float32, [None, self.output_height, self.output_width, self.c_dim], name='real_images')
     # z_bg: 
-    self.z_bg = tf.placeholder(tf.float32, [None, cfg['z_dim_bg']], name='z_bg')
+    self.z_bg = tf.placeholder(tf.float32, [None, None, cfg['z_dim_bg']], name='z_bg')
     # z_fg:
     self.z_fg = tf.placeholder(tf.float32, [None, None, cfg['z_dim_fg']], name='z_fg')
 
@@ -68,6 +68,7 @@ class HoloGAN(object):
 
     funcs = {
         'generator_AdaIN': self.generator_AdaIN,
+        'generator_AdaIN_block': self.generator_AdaIN_block,
         'generator_AdaIN_res128': self.generator_AdaIN_res128,
         'discriminator_IN': self.discriminator_IN,
         'discriminator_IN_style_res128': self.discriminator_IN_style_res128,
@@ -103,8 +104,10 @@ class HoloGAN(object):
         #             tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h4_r, tf.ones_like(self.d_h4_r))) \
         #             + tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.d_h4_f, tf.zeros_like(self.d_h4_f))))
     else:
-        self.D, self.D_logits, _ = dis_func(inputs, cont_dim=cfg['z_dim'], reuse=False)
-        self.D_, self.D_logits_, self.Q_c_given_x = dis_func(self.G, cont_dim=cfg['z_dim'], reuse=True)
+        # self.D, self.D_logits, _ = dis_func(inputs, cont_dim=cfg['z_dim_fg'], reuse=False)
+        # self.D_, self.D_logits_, self.Q_c_given_x = dis_func(self.G, cont_dim=cfg['z_dim_fg'], reuse=True)
+        self.D, self.D_logits = dis_func(inputs, cont_dim=cfg['z_dim_fg'], reuse=False)
+        self.D_, self.D_logits_ = dis_func(self.G, cont_dim=cfg['z_dim_fg'], reuse=True)
 
 
     self.d_loss_real = tf.reduce_mean(sigmoid_cross_entropy_with_logits(self.D_logits, tf.ones_like(self.D)))
@@ -152,17 +155,30 @@ class HoloGAN(object):
       self.d_sum = merge_summary([self.d_loss_real_sum, self.d_loss_sum])
       self.writer = SummaryWriter(os.path.join(LOGDIR, str(dt.now())), self.sess.graph)
 
+      num_objs = 1
       # Sample noise Z and view parameters to test during training
-      sample_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
-      sample_view = self.gen_view_func(cfg['batch_size'],
+      sample_z_bg = self.sampling_Z(cfg['z_dim_bg'], num_objs=1, type=str(cfg['sample_z']))
+      sample_z_fg = self.sampling_Z(cfg['z_dim_fg'], num_objs=num_objs, type=str(cfg['sample_z']))
+      sample_view_bg = self.gen_view_func(cfg['batch_size'] * 1,
                                        cfg['ele_low'], cfg['ele_high'],
                                        cfg['azi_low'], cfg['azi_high'],
                                        cfg['scale_low'], cfg['scale_high'],
                                        cfg['x_low'], cfg['x_high'],
                                        cfg['y_low'], cfg['y_high'],
                                        cfg['z_low'], cfg['z_high'],
-                                       with_translation=False,
-                                       with_scale=to_bool(str(cfg['with_translation'])))
+                                       with_translation=to_bool(str(cfg['with_translation'])),
+                                       with_scale=to_bool(str(cfg['with_scale'])))
+      sample_view_fg = self.gen_view_func(cfg['batch_size'] * num_objs,
+                                       cfg['ele_low'], cfg['ele_high'],
+                                       cfg['azi_low'], cfg['azi_high'],
+                                       cfg['scale_low'], cfg['scale_high'],
+                                       cfg['x_low'], cfg['x_high'],
+                                       cfg['y_low'], cfg['y_high'],
+                                       cfg['z_low'], cfg['z_high'],
+                                       with_translation=to_bool(str(cfg['with_translation'])),
+                                       with_scale=to_bool(str(cfg['with_scale'])))
+      # sample_view_bg = tf.reshape(sample_view_bg, (cfg['batch_size'], 1, *sample_view_bg.shape[1:]))
+      # sample_view_fg = tf.reshape(sample_view_fg, (cfg['batch_size'], num_objs, *sample_view_fg.shape[1:]))
       sample_files = self.data[0:cfg['batch_size']]
 
       if config.dataset == "cats" or config.dataset == "cars":
@@ -182,16 +198,39 @@ class HoloGAN(object):
 
       ## TEMP
       batch_images = sample_images
-      batch_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
-      batch_view = self.gen_view_func(cfg['batch_size'],
-                                cfg['ele_low'], cfg['ele_high'],
-                                cfg['azi_low'], cfg['azi_high'],
-                                cfg['scale_low'], cfg['scale_high'],
-                                cfg['x_low'], cfg['x_high'],
-                                cfg['y_low'], cfg['y_high'],
-                                cfg['z_low'], cfg['z_high'],
-                                with_translation=False,
-                                with_scale=to_bool(str(cfg['with_translation'])))
+      # batch_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
+      # batch_view = self.gen_view_func(cfg['batch_size'],
+      #                           cfg['ele_low'], cfg['ele_high'],
+      #                           cfg['azi_low'], cfg['azi_high'],
+      #                           cfg['scale_low'], cfg['scale_high'],
+      #                           cfg['x_low'], cfg['x_high'],
+      #                           cfg['y_low'], cfg['y_high'],
+      #                           cfg['z_low'], cfg['z_high'],
+      #                           with_translation=False,
+      #                           with_scale=to_bool(str(cfg['with_translation'])))
+
+      batch_z_bg = self.sampling_Z(cfg['z_dim_bg'], num_objs=1, type=str(cfg['sample_z']))
+      batch_z_fg = self.sampling_Z(cfg['z_dim_fg'], num_objs=num_objs, type=str(cfg['sample_z']))
+      batch_view_bg = self.gen_view_func(cfg['batch_size'] * 1,
+                                       cfg['ele_low'], cfg['ele_high'],
+                                       cfg['azi_low'], cfg['azi_high'],
+                                       cfg['scale_low'], cfg['scale_high'],
+                                       cfg['x_low'], cfg['x_high'],
+                                       cfg['y_low'], cfg['y_high'],
+                                       cfg['z_low'], cfg['z_high'],
+                                       with_translation=to_bool(str(cfg['with_translation'])),
+                                       with_scale=to_bool(str(cfg['with_scale'])))
+      batch_view_fg = self.gen_view_func(cfg['batch_size'] * num_objs,
+                                       cfg['ele_low'], cfg['ele_high'],
+                                       cfg['azi_low'], cfg['azi_high'],
+                                       cfg['scale_low'], cfg['scale_high'],
+                                       cfg['x_low'], cfg['x_high'],
+                                       cfg['y_low'], cfg['y_high'],
+                                       cfg['z_low'], cfg['z_high'],
+                                       with_translation=to_bool(str(cfg['with_translation'])),
+                                       with_scale=to_bool(str(cfg['with_scale'])))
+      # batch_view_bg = tf.reshape(batch_view_bg, (cfg['batch_size'], 1, *batch_view_bg.shape[1:]))
+      # batch_view_fg = tf.reshape(batch_view_fg, (cfg['batch_size'], num_objs, *batch_view_fg.shape[1:]))
 
       counter = 0
       start_time = time.time()
@@ -241,8 +280,11 @@ class HoloGAN(object):
               #                          with_scale=to_bool(str(cfg['with_translation'])))
 
               feed = {self.inputs: batch_images,
-                      self.z: batch_z,
-                      self.view_in: batch_view,
+                      self.z_bg: batch_z_bg,
+                      self.z_fg: batch_z_fg,
+                      # self.z: batch_z,
+                      self.view_in_bg: batch_view_bg,
+                      self.view_in_fg: batch_view_fg,
                       self.d_lr_in: d_lr,
                       self.g_lr_in: g_lr}
               # Update D network
@@ -258,7 +300,8 @@ class HoloGAN(object):
               errD_fake = self.d_loss_fake.eval(feed)
               errD_real = self.d_loss_real.eval(feed)
               errG = self.g_loss.eval(feed)
-              errQ = self.q_loss.eval(feed)
+              # errQ = self.q_loss.eval(feed)
+              errQ = 0.
 
               print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f" \
                     % (epoch, idx, batch_idxs,
@@ -267,14 +310,22 @@ class HoloGAN(object):
               if np.mod(counter, 100) == 0:
                   # self.save(LOGDIR, counter)
                   feed_eval = {self.inputs: sample_images,
-                               self.z: sample_z,
-                               self.view_in: sample_view,
+                               self.z_bg: sample_z_bg,
+                               self.z_fg: sample_z_fg,
+                               # self.z: batch_z,
+                               self.view_in_bg: sample_view_bg,
+                               self.view_in_fg: sample_view_fg,
                                self.d_lr_in: d_lr,
                                self.g_lr_in: g_lr}
 
                   samples, d_loss, g_loss = self.sess.run(
                       [self.G, self.d_loss, self.g_loss],
                       feed_dict=feed_eval)
+
+
+                  print('generated samples')
+                  print(samples)
+
                   ren_img = inverse_transform(samples)
                   ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
                   # real_img = inverse_transform(np.array(sample_images))
@@ -361,12 +412,16 @@ class HoloGAN(object):
 
 #=======================================================================================================================
 
-  def sampling_Z(self, z_dim, type="uniform"):
-      return np.ones((cfg['batch_size'], z_dim))
-      if str.lower(type) == "uniform":
-          return np.random.uniform(-1., 1., (cfg['batch_size'], z_dim))
+  def sampling_Z(self, z_dim, num_objs=None, type="uniform"):
+      if num_objs:
+        out_shape = (cfg['batch_size'], num_objs, z_dim)
       else:
-          return np.random.normal(0, 1, (cfg['batch_size'], z_dim))
+        out_shape = (cfg['batch_size'], z_dim)
+      # return np.ones(out_shape)
+      if str.lower(type) == "uniform":
+          return np.random.uniform(-1., 1., out_shape)
+      else:
+          return np.random.normal(0, 1, out_shape)
 
   def linear_classifier(self, features, scope = "lin_class", stddev=0.02, reuse=False):
       with tf.variable_scope(scope) as sc:
@@ -376,9 +431,11 @@ class HoloGAN(object):
           logits = tf.matmul(features, w) + b
           return   tf.nn.sigmoid(logits), logits
 
-  def z_mapping_function(self, z, output_channel, scope='z_mapping', act="relu", stddev=0.02):
+  def z_mapping_function(self, z, output_channel, scope='z_mapping', act="relu", stddev=0.02, z_dim=None):
       with tf.variable_scope(scope) as sc:
-          w = tf.get_variable('w', [z.get_shape()[-1], output_channel * 2],
+          if z_dim is None:
+            z_dim = z.get_shape()[-1]
+          w = tf.get_variable('w', [z_dim, output_channel * 2],
                               initializer=tf.random_normal_initializer(stddev=stddev))
           b = tf.get_variable('biases', output_channel * 2, initializer=tf.constant_initializer(0.0))
           if act == "relu":
@@ -527,9 +584,9 @@ class HoloGAN(object):
         w_dim = self.gf_dim # 64
       elif obj_type == 'bg':
         variable_scope_name = 'bg_object_generator'
-        w_dim = self.gf_dim / 2 # 32
+        w_dim = self.gf_dim // 2 # 32
 
-      batch_size, num_objs, z_dim = tf.shape(z)
+      batch_size, num_objs, z_dim = tf.shape(z)[0], tf.shape(z)[1], tf.shape(z)[2]
       s_h, s_w, s_d = 64, 64, 64 # height, width, depth of something
       s_h2, s_w2, s_d2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2), conv_out_size_same(s_d, 2)
       s_h4, s_w4, s_d4 = conv_out_size_same(s_h2, 2), conv_out_size_same(s_w2, 2), conv_out_size_same(s_d2, 2)
@@ -542,23 +599,24 @@ class HoloGAN(object):
         
         with tf.variable_scope('g_w_constant') as scope:
           w = tf.get_variable('w', [s_h16, s_w16, s_d16, w_dim * 8], initializer=tf.random_normal_initializer(stddev=0.02))
-          w_tile = tf.tile(tf.reshape(w, (1, 1, *tf.shape(w))), (batch_size, num_objs, 1, 1, 1, 1)) #Repeat the learnt constant features to make a batch
+          w_tile = tf.tile(tf.reshape(w, (1, 1, s_h16, s_w16, s_d16, w_dim * 8)), (batch_size, num_objs, 1, 1, 1, 1)) #Repeat the learnt constant features to make a batch
           
           # reshape all objects of al samples as one big batch
-          w_tile = tf.reshape(w_tile, (batch_size * num_objs, *tf.shape(w))) # (bsz, num_objects, h, w, d, c) -> (bsz * num_objects, h, w, d, c)
+          w_tile = tf.reshape(w_tile, (batch_size * num_objs, s_h16, s_w16, s_d16, w_dim * 8)) # (bsz, num_objects, h, w, d, c) -> (bsz * num_objects, h, w, d, c)
+          z_dim = z.get_shape()[-1] # have to get before reshape, because reshape leaves it as None
           z = tf.reshape(z, (batch_size * num_objs, z_dim)) # (bsz, num_objects, z_dim) -> (bsz * num_objects, z_dim)
 
-          s0, b0 = self.z_mapping_function(z, self.gf_dim * 8, 'g_z0')
+          s0, b0 = self.z_mapping_function(z, w_dim * 8, 'g_z0', z_dim=z_dim)
           h0 = AdaIn(w_tile, s0, b0)
           h0 = lrelu(h0)
 
-        h1= deconv3d(h0, [batch_size, s_h8, s_w8, s_d8, self.gf_dim * 2], k_h=3, k_w=3, k_d=3, name='g_h1')
-        s1, b1 = self.z_mapping_function(z, self.gf_dim * 2, 'g_z1')
+        h1= deconv3d(h0, [batch_size * num_objs, s_h8, s_w8, s_d8, self.gf_dim * 2], k_h=3, k_w=3, k_d=3, name='g_h1')
+        s1, b1 = self.z_mapping_function(z, self.gf_dim * 2, 'g_z1', z_dim=z_dim)
         h1 = AdaIn(h1, s1, b1)
         h1 = lrelu(h1)
 
-        h2 = deconv3d(h1, [batch_size, s_h4, s_w4, s_d4, self.gf_dim * 1],  k_h=3, k_w=3, k_d=3, name='g_h2')
-        s2, b2 = self.z_mapping_function(z, self.gf_dim * 1, 'g_z2')
+        h2 = deconv3d(h1, [batch_size * num_objs, s_h4, s_w4, s_d4, self.gf_dim * 1],  k_h=3, k_w=3, k_d=3, name='g_h2')
+        s2, b2 = self.z_mapping_function(z, self.gf_dim * 1, 'g_z2', z_dim=z_dim)
         h2 = AdaIn(h2, s2, b2)
         h2 = lrelu(h2)
 
@@ -566,20 +624,21 @@ class HoloGAN(object):
         h2_rotated = transform_voxel_to_match_image(h2_rotated)
         h2_out = h2_rotated
 
-        h2_proj1 = deconv3d(h2_rotated, [batch_size, s_h4, s_w4, s_d4, self.gf_dim], k_h=3, k_w=3, k_d=3, d_h=1, d_w=1, d_d=1, name='g_h2_proj1')
+        h2_proj1 = deconv3d(h2_rotated, [batch_size * num_objs, s_h4, s_w4, s_d4, self.gf_dim], k_h=3, k_w=3, k_d=3, d_h=1, d_w=1, d_d=1, name='g_h2_proj1')
         h2_proj1 = lrelu( h2_proj1)
 
-        h2_proj2 = deconv3d(h2_proj1, [batch_size, s_h4, s_w4, s_d4, self.gf_dim ], k_h=3, k_w=3, k_d=3, d_h=1, d_w=1, d_d=1,  name='g_h2_proj2')
+        h2_proj2 = deconv3d(h2_proj1, [batch_size * num_objs, s_h4, s_w4, s_d4, self.gf_dim ], k_h=3, k_w=3, k_d=3, d_h=1, d_w=1, d_d=1,  name='g_h2_proj2')
         h2_proj2 = lrelu( h2_proj2)
         h2_out = h2_proj2
 
         # expand objects
-        return tf.reshape(h2_out, (batch_size, num_objs, *tf.shape(h2_out)[2:]))
+        # print(h2_out.shape)
+        return tf.reshape(h2_out, (batch_size, num_objs, *h2_out.shape[1:]))
 
 
   def generator_AdaIN_block(self, z_bg, z_fg, view_in_bg, view_in_fg, reuse=False):
-      bsz, num_objs_bg, z_dim_bg = tf.shape(z_bg)
-      _, num_objs_fg, z_dim_fg = tf.shape(z_fg)
+      bsz, num_objs_bg, z_dim_bg = tf.shape(z_bg)[0], tf.shape(z_bg)[1], tf.shape(z_bg)[2]
+      _, num_objs_fg, z_dim_fg = tf.shape(z_fg)[0], tf.shape(z_fg)[1], tf.shape(z_fg)[2]
 
       s_h, s_w, s_d = 64, 64, 64
       s_h2, s_w2, s_d2 = conv_out_size_same(s_h, 2), conv_out_size_same(s_w, 2), conv_out_size_same(s_d, 2)
@@ -619,7 +678,6 @@ class HoloGAN(object):
           h7 = deconv2d(h6, [bsz, s_h * 2, s_w * 2, self.c_dim], k_h=4, k_w=4, d_h=1, d_w=1, name='g_h7')
 
           output = tf.nn.tanh(h7, name="output")
-          # output = tf.nn.sigmoid(h7, name="output")
           return output
 
 

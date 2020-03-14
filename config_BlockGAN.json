@@ -17,8 +17,8 @@
   "sample_z":"uniform",
 
 
-  "discriminator":"discriminator_IN_res128",
-  "generator":"generator_AdaIN_res128",
+  "discriminator":"discriminator_IN_style_res128",
+  "generator":"generator_AdaIN_block",
   "view_func":"generate_random_rotation_translation",
   "train_func":"train_HoloGAN",
   "build_func":"build_HoloGAN",
