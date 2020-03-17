@@ -350,6 +350,7 @@ class HoloGAN(object):
                       #     real_img[0])
                       # print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
               counter += 1
+          return
       self.save(LOGDIR, counter)
 
   def sample_HoloGAN(self, config):
@@ -656,29 +657,42 @@ class HoloGAN(object):
           h2_rotated_agg = tf.math.reduce_max(h2_rotated, axis=1, name='h2_rotated_agg')
           h2_2d = tf.reshape(h2_rotated_agg, [bsz, s_h4, s_w4, s_d4 * self.gf_dim])
 
+          pop1 = tf.print('h2_2d', h2_2d, output_stream=sys.stdout)
+
           # 1X1 convolution
           h3 = deconv2d(h2_2d, [bsz, s_h4, s_w4, self.gf_dim], k_h=1, k_w=1, d_h=1, d_w=1, name='g_h3')
           h3 = lrelu(h3)
+
+          pop2 = tf.print('h3', h3, output_stream=sys.stdout)
 
           h4  = deconv2d(h3, [bsz, s_h2, s_w2, self.gf_dim],  k_h=4, k_w=4, name='g_h4')
           # s4, b4 = self.z_mapping_function(z, self.gf_dim, 'g_z4')
           # h4  = AdaIn(h4, s4, b4)
           h4 = lrelu(h4)
 
+          pop3 = tf.print('h4', h4, output_stream=sys.stdout)
+
           h5 = deconv2d(h4, [bsz, s_h, s_w, self.gf_dim], k_h=4, k_w=4, name='g_h5')
           # s5, b5 = self.z_mapping_function(z, self.gf_dim, 'g_z5')
           # h5 = AdaIn(h5, s5, b5)
           h5 = lrelu(h5)
 
+          pop4 = tf.print('h5', h5, output_stream=sys.stdout)
+          
           h6 = deconv2d(h5, [bsz, s_h * 2, s_w * 2, self.gf_dim], k_h=4, k_w=4, name='g_h6')
           # s6, b6 = self.z_mapping_function(z, self.gf_dim // 2, 'g_z6')
           # h6 = AdaIn(h6, s6, b6)
           h6 = lrelu(h6)
 
+          pop5 = tf.print('h6', h6, output_stream=sys.stdout)
+
           h7 = deconv2d(h6, [bsz, s_h * 2, s_w * 2, self.c_dim], k_h=4, k_w=4, d_h=1, d_w=1, name='g_h7')
 
-          output = tf.nn.tanh(h7, name="output")
-          return output
+          pop6 = tf.print('h7', h7, output_stream=sys.stdout)
+
+          with tf.control_dependencies([pop1, pop2, pop3, pop4, pop5, pop6]):
+              output = tf.nn.tanh(h7, name="output")
+              return output
 
 
   def generator_AdaIN_res128(self, z_bg, z_fg, view_in_bg, view_in_fg, reuse=False):
