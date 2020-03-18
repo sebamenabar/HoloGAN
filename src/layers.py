@@ -12,12 +12,12 @@ class AdaIN(Model):
         self.z_proj = Dense(
             units=feat_dim * 2,
             input_shape=(z_dim,),
-            activation='relu',
+            activation="8relu",
             use_bias=True,
             kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
-            bias_initializer='zeros',
+            bias_initializer="zeros",
         )
-        
+
     def call(self, features, z):
         """
         Adaptive instance normalization component. Works with both 4D and 5D tensors
@@ -26,8 +26,9 @@ class AdaIN(Model):
         :bias: bias factor. This would otherwise be calculated as the mean from a "style" features in style transfer
         """
         scale, bias = tf.split(self.z_proj(z), 2, num=2, axis=1)
-        mean, variance = tf.nn.moments(features, list(range(len(features.get_shape())))[1:-1],
-                                       keepdims=True)  # Only consider spatial dimension
+        mean, variance = tf.nn.moments(
+            features, list(range(len(features.get_shape())))[1:-1], keepdims=True
+        )  # Only consider spatial dimension
         sigma = tf.math.rsqrt(variance + 1e-8)
         normalized = (features - mean) * sigma
         scale_broadcast = tf.reshape(scale, tf.shape(mean))
@@ -38,18 +39,19 @@ class AdaIN(Model):
 
 
 def l2_normalize(x, eps=1e-12):
-    '''
+    """
   Scale input by the inverse of it's euclidean norm
-  '''
+  """
     return x / tf.linalg.norm(x + eps)
 
 
 class SpectralNorm(Constraint):
-    '''
-    Uses power iteration method to calculate a fast approximation 
+    """
+    Uses power iteration method to calculate a fast approximation
     of the spectral norm (Golub & Van der Vorst)
     The weights are then scaled by the inverse of the spectral norm
-    '''
+    """
+
     def __init__(self, power_iters=POWER_ITERATIONS):
         self.n_iters = power_iters
 
@@ -66,15 +68,19 @@ class SpectralNorm(Constraint):
         return w / sigma
 
     def get_config(self):
-        return {'n_iters': self.n_iters}
+        return {"n_iters": self.n_iters}
 
 
 class InstanceNorm(Model):
     def __init__(self, num_channels):
         super().__init__()
-        self.scale = tf.Variable(initial_value=tf.random.normal((num_channels,), 1.0, 0.02))
-        self.offset = tf.Variable(initial_value=tf.zeros((num_channels,), dtype=tf.float32))
-    
+        self.scale = tf.Variable(
+            initial_value=tf.random.normal((num_channels,), 1.0, 0.02)
+        )
+        self.offset = tf.Variable(
+            initial_value=tf.zeros((num_channels,), dtype=tf.float32)
+        )
+
     def call(self, x):
         mean, variance = tf.nn.moments(x, axes=[1, 2], keepdims=True)
         epsilon = 1e-5

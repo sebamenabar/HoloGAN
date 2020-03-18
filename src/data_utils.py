@@ -10,12 +10,14 @@ def decode_img(img, img_width, img_height):
     # resize the image to the desired size.
     return tf.image.resize(img, [img_width, img_height])
 
+
 def process_path(file_path):
     # label = get_label(file_path)
     # load the raw data from the file as a string
     img = tf.io.read_file(file_path)
     img = decode_img(img)
     return img
+
 
 def show_batch(image_batch, labels=None):
     plt.figure(figsize=(10, 10))
@@ -26,7 +28,8 @@ def show_batch(image_batch, labels=None):
             plt.title(labels[n])
         except:
             pass
-        plt.axis('off')
+        plt.axis("off")
+
 
 def prepare_for_training(ds, batch_size, cache=True, shuffle_buffer_size=1000):
     # This is a small dataset, only load it once, and keep it in memory.
