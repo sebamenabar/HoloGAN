@@ -9,11 +9,12 @@ import dateutil
 import argparse
 from datetime import datetime as dt
 
+import comet_ml  # comet must be imported before tf
 import tensorflow as tf
 
-import comet_ml
 from dotenv import load_dotenv
 
+from trainer import Trainer
 from misc_utils import mkdir_p
 from config import cfg, cfg_from_file
 
@@ -28,8 +29,9 @@ def parse_args():
     parser.add_argument("--manual-seed", type=int, help="manual seed")
 
     # Resume training
-    parser.add_argument('--bsz', type=float)
+    parser.add_argument("--bsz", type=float)
     parser.add_argument("--resume", type=str)
+    parser.add_argument("--data-dir", type=str)
 
     # Logs
     parser.add_argument("--logdir", type=str)
@@ -37,7 +39,9 @@ def parse_args():
     parser.add_argument("--logcomet", action="store_true")
     parser.add_argument("--experiment-name", type=str)
     parser.add_argument("--run-name", type=str)
-    parser.add_argument('--no-log', action='store_true')
+    parser.add_argument("--no-log", action="store_true")
+
+    parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
     return args
@@ -73,14 +77,18 @@ if __name__ == "__main__":
         cfg.experiment_name = args.experiment_name
     if args.run_name:
         cfg.run_name = args.run_name
+    if args.data_dir is not None:
+        cfg.train.data_dir = args.data_dir
 
     manual_seed = (
-        args.manual_seed or getattr(cfg, "manual_seed") or random.randint(1, 10000)
+        args.manual_seed
+        or getattr(cfg, "manual_seed", None)
+        or random.randint(1, 10000)
     )
     random.seed(manual_seed)
     tf.random.set_seed(manual_seed)
     cfg.manual_seed = manual_seed
-    
+
     log = not args.no_log
     cfg.no_log = args.no_log
     cfg.logcomet = args.logcomet & log
@@ -88,4 +96,6 @@ if __name__ == "__main__":
         logdir = set_logdir(cfg, cfg.experiment_name, cfg.run_name)
     else:
         logdir = None
-    
+
+    trainer = Trainer(cfg, logdir)
+    trainer.train()

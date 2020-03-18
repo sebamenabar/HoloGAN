@@ -3,18 +3,24 @@ experiment_name: 'barebones'
 comet_project_name: 'train-gan'
 
 train:
+  data_dir: 'one_image_dataset/'
   batch_size: 64
   epochs: 50
   snapshot_interval: 5
+  image_height: 64
+  image_width: 64
+  it_log_interval: 1
   generator:
-    lr: 0.0001
-    beta1: 0.5
-    beta2: 0.999
+    optimizer:
+      learning_rate: 0.0001
+      beta_1: 0.5
+      beta_2: 0.999
     update_freq: 2
   discriminator:
-    lr: 0.0001
-    beta1: 0.5
-    beta2: 0.5
+    optimizer:
+      learning_rate: 0.0001
+      beta_1: 0.5
+      beta_2: 0.5
     random_noise: False
 
 model:

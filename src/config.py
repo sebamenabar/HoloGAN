@@ -19,11 +19,20 @@ __C.comet_project_name = ""
 __C.logcomet = False
 
 __C.train = edict(
+    data_dir="",
     batch_size=64,
     epochs=50,
     snapshot_interval=5,
-    generator=edict(lr=0.0001, beta1=0.5, beta2=0.999, update_freq=2,),
-    discriminator=edict(lr=0.0001, beta1=0.5, beta2=0.999, random_noise=False,),
+    image_height=64,
+    image_width=64,
+    it_log_interval=100,
+    generator=edict(
+        optimizer=edict(learning_rate=0.0001, beta_1=0.5, beta_2=0.999), update_freq=2,
+    ),
+    discriminator=edict(
+        optimizer=edict(learning_rate=0.0001, beta_1=0.5, beta_2=0.999),
+        random_noise=False,
+    ),
 )
 
 __C.model = edict(

@@ -12,7 +12,7 @@ class AdaIN(Model):
         self.z_proj = Dense(
             units=feat_dim * 2,
             input_shape=(z_dim,),
-            activation="8relu",
+            activation="relu",
             use_bias=True,
             kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
             bias_initializer="zeros",

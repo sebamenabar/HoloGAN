@@ -2,7 +2,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 
 
-def decode_img(img, img_width, img_height):
+def decode_img(img, img_height, img_width):
     # convert the compressed string to a 3D uint8 tensor
     img = tf.image.decode_jpeg(img, channels=3)
     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
@@ -11,16 +11,16 @@ def decode_img(img, img_width, img_height):
     return tf.image.resize(img, [img_width, img_height])
 
 
-def process_path(file_path):
+def process_path(file_path, img_height, img_width):
     # label = get_label(file_path)
     # load the raw data from the file as a string
     img = tf.io.read_file(file_path)
-    img = decode_img(img)
+    img = decode_img(img, img_height, img_width)
     return img
 
 
 def show_batch(image_batch, labels=None):
-    plt.figure(figsize=(10, 10))
+    fig = plt.figure(figsize=(10, 10))
     for n in range(min(25, image_batch.shape[0])):
         ax = plt.subplot(5, 5, n + 1)
         plt.imshow(image_batch[n])
@@ -29,6 +29,7 @@ def show_batch(image_batch, labels=None):
         except:
             pass
         plt.axis("off")
+    return fig
 
 
 def prepare_for_training(ds, batch_size, cache=True, shuffle_buffer_size=1000):

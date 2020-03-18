@@ -10,7 +10,7 @@ from tensorflow.keras.layers import (
     Conv3DTranspose,
 )
 
-from .layers import AdaIN, InstanceNorm, SpectralNorm
+from layers import AdaIN, InstanceNorm, SpectralNorm
 
 
 class ObjectGenerator(Model):
@@ -151,6 +151,7 @@ class Generator(Model):
             bias_initializer="zeros",
         )
 
+    @tf.function
     def call(self, z_bg, z_fg):
         bsz = z_bg.shape[0]
 
@@ -200,6 +201,7 @@ class Discriminator(Model):
             self.inst_norms.append(InstanceNorm(f))
         self.linear = Dense(1, kernel_constraint=SpectralNorm())
 
+    @tf.function
     def call(self, x):
         for conv, norm in zip(self.convs, self.inst_norms):
             x = self.lrelu(norm(conv(x)))

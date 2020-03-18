@@ -8,8 +8,8 @@
             "name": "Python: main File",
             "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/main.py",
-            "args": ["./config_BlockGAN.json"],
+            "program": "${workspaceFolder}/src/main.py",
+            "args": ["--cfg", "cfg/barebones.yml", "--experiment-name", "debug"],
             "console": "integratedTerminal"
         }
     ]
