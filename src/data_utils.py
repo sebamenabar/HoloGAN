@@ -54,3 +54,10 @@ def prepare_for_training(ds, batch_size, cache=True, shuffle_buffer_size=1000):
     ds = ds.prefetch(buffer_size=batch_size)
 
     return ds
+
+def image_grid(x, size=5):
+    t = tf.unstack(x[:size * size], num=size*size, axis=0)
+    rows = [tf.concat(t[i*size:(i+1)*size], axis=0) 
+            for i in range(size)]
+    image = tf.concat(rows, axis=1)
+    return image[None]

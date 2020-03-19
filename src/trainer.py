@@ -9,6 +9,7 @@ import tensorflow as tf
 from tensorflow.keras import optimizers, losses
 
 import pprint
+import matplotlib.pyplot as plt
 from comet_ml import Experiment
 from tqdm.autonotebook import tqdm
 
@@ -179,17 +180,18 @@ class Trainer:
         for it, image_batch in pbar:
             bsz = image_batch.shape[0]
             # generated random noise
-            z_bg, z_fg = self.generate_random_noise(bsz, (3, min(10, 3 + 1 * epoch)))
+            z_bg, z_fg = self.generate_random_noise(bsz, (3, min(10, 3 + 1 * (epoch // 2))))
             with tf.GradientTape(persistent=True) as tape:
                 # fake img
-                d_fake_logits, d_real_logits, _ = self.batch_logits(
+                d_fake_logits, d_real_logits, generated = self.batch_logits(
                     image_batch, z_bg, z_fg
                 )
                 d_loss = self.discriminator_loss(d_real_logits, d_fake_logits)
                 g_loss = self.generator_loss(d_fake_logits)
 
             total_d_loss += d_loss.numpy()
-            total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
+            # total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
+            total_g_loss += g_loss.numpy()
 
             d_variables = self.discriminator.trainable_variables
             d_gradients = tape.gradient(d_loss, d_variables)
@@ -200,17 +202,17 @@ class Trainer:
             self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
 
             # according to paper generator makes 2 steps per each step of the disc
-            for _ in range(self.cfg.train.generator.update_freq - 1):
-                with tf.GradientTape(persistent=True) as tape:
-                    # fake img
-                    d_fake_logits, _, generated = self.batch_logits(
-                        image_batch, z_bg, z_fg
-                    )
-                    g_loss = self.generator_loss(d_fake_logits)
-                g_variables = self.generator.trainable_variables
-                g_gradients = tape.gradient(g_loss, g_variables)
-                self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
-                total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
+            # for _ in range(self.cfg.train.generator.update_freq - 1):
+            #     with tf.GradientTape(persistent=True) as tape:
+            #         # fake img
+            #         d_fake_logits, _, generated = self.batch_logits(
+            #             image_batch, z_bg, z_fg
+            #         )
+            #         g_loss = self.generator_loss(d_fake_logits)
+            #     g_variables = self.generator.trainable_variables
+            #     g_gradients = tape.gradient(g_loss, g_variables)
+            #     self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
+            #     total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
 
             pbar.set_postfix(
                 g_loss=f"{g_loss.numpy():.4f} ({total_g_loss / (counter):.4f})",
@@ -255,14 +257,14 @@ class Trainer:
                 figure_name="" f"generated_{epoch}_{it}.jpg",
                 step=curr_step,
             )
-            fig.close()
+            plt.close(fig)
 
     def train(self):
         print("Start training")
         for epoch in range(self.cfg.train.epochs):
             with self.comet.train():
                 self.train_epoch(epoch)
-            if self.log and ((epoch + 1) % self.cfg.train.snapshot_interval == 0):
+            if self.log and (((epoch + 1) % self.cfg.train.snapshot_interval) == 0):
                 self.ckpt_manager.save(epoch)
 
     def save_model(self, epoch):
