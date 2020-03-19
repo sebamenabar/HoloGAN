@@ -27,7 +27,9 @@ __C.train = edict(
     image_width=64,
     it_log_interval=100,
     generator=edict(
-        optimizer=edict(learning_rate=0.0001, beta_1=0.5, beta_2=0.999), update_freq=2,
+        optimizer=edict(learning_rate=0.0001, beta_1=0.5, beta_2=0.999),
+        update_freq=2,
+        fixed_z=False,
     ),
     discriminator=edict(
         optimizer=edict(learning_rate=0.0001, beta_1=0.5, beta_2=0.999),

@@ -40,7 +40,6 @@ def parse_args():
     parser.add_argument("--experiment-name", type=str)
     parser.add_argument("--run-name", type=str)
     parser.add_argument("--no-log", action="store_true")
-
     parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
@@ -78,6 +77,10 @@ if __name__ == "__main__":
     if args.run_name:
         cfg.run_name = args.run_name
     if args.data_dir is not None:
+        cfg.train.data_dir = args.data_dir
+    if args.comet_project_name:
+        cfg.comet_project_name = args.comet_project_name
+    if args.data_dir:
         cfg.train.data_dir = args.data_dir
 
     manual_seed = (

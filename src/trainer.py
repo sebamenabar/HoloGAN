@@ -15,7 +15,13 @@ from tqdm.autonotebook import tqdm
 
 from model import Generator, Discriminator
 from misc_utils import mkdir_p, flatten_json_iterative_solution
-from data_utils import process_path, prepare_for_training, show_batch
+from data_utils import (
+    process_path,
+    prepare_for_training,
+    show_batch,
+    disc_preds_to_label,
+    split_images_on_disc,
+)
 
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
@@ -99,6 +105,16 @@ class Trainer:
         self.prepare_dataset(self.cfg.train.data_dir)
         self.print_info()
 
+        if self.cfg.train.generator.fixed_z:
+            self.z_bg = tf.random.uniform(
+                (1, self.generator.z_dim_bg), minval=-1, maxval=1
+            )
+            self.z_fg = tf.random.uniform(
+                (1, 1, self.generator.z_dim_fg), minval=-1, maxval=1
+            )
+        else:
+            self.z_bg = self.z_fg = None
+
     def prepare_dataset(self, data_dir):
         self.data_dir = data_dir
         self.num_tr = len(glob.glob(osp.join(self.data_dir, "*.png")))
@@ -177,10 +193,23 @@ class Trainer:
         total_d_loss = 0.0
         total_g_loss = 0.0
         counter = 1
+        real_are_real_samples_counter = 0
+        real_samples_counter = 0
+        fake_are_fake_samples_counter = 0
+        fake_samples_counter = 0
+
+        z_bg = z_fg = None
         for it, image_batch in pbar:
             bsz = image_batch.shape[0]
             # generated random noise
-            z_bg, z_fg = self.generate_random_noise(bsz, (3, min(10, 3 + 1 * (epoch // 2))))
+            if self.z_bg and self.z_fg:
+                # For overfitting one sample and debugging
+                z_bg = tf.repeat(self.z_bg, bsz, axis=0)
+                z_fg = tf.repeat(self.z_fg, bsz, axis=0)
+            else:
+                z_bg, z_fg = self.generate_random_noise(
+                    bsz, (3, min(10, 3 + 1 * (epoch // 2)))
+                )
             with tf.GradientTape(persistent=True) as tape:
                 # fake img
                 d_fake_logits, d_real_logits, generated = self.batch_logits(
@@ -201,6 +230,15 @@ class Trainer:
             g_gradients = tape.gradient(g_loss, g_variables)
             self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
 
+            real_samples_counter += d_real_logits.shape[0]
+            fake_samples_counter += d_fake_logits.shape[0]
+
+            real_are_real = (d_real_logits >= 0).numpy().sum()
+            real_are_real_samples_counter += real_are_real
+
+            fake_are_fake = (d_fake_logits < 0).numpy().sum()
+            fake_are_fake_samples_counter += fake_are_fake
+
             # according to paper generator makes 2 steps per each step of the disc
             # for _ in range(self.cfg.train.generator.update_freq - 1):
             #     with tf.GradientTape(persistent=True) as tape:
@@ -217,45 +255,99 @@ class Trainer:
             pbar.set_postfix(
                 g_loss=f"{g_loss.numpy():.4f} ({total_g_loss / (counter):.4f})",
                 d_loss=f"{d_loss.numpy():.4f} ({total_d_loss / (counter):.4f})",
+                real_are_real=f"{real_are_real / d_real_logits.shape[0]} ({real_are_real_samples_counter / real_samples_counter})",
+                fake_are_fake=f"{fake_are_fake / d_fake_logits.shape[0]} ({fake_are_fake_samples_counter / fake_samples_counter})",
             )
-            pbar.refresh()
 
             if it % (self.cfg.train.it_log_interval) == 0:
                 self.log_training(
                     d_loss=total_d_loss / counter,
                     g_loss=total_g_loss / counter,
-                    generated_images=(generated + 1) / 2,
+                    real_are_real=real_are_real_samples_counter / real_samples_counter,
+                    fake_are_fake=fake_are_fake_samples_counter / fake_samples_counter,
+                    fake_images=(generated + 1) / 2,
+                    real_images=image_batch,
+                    d_fake_logits=d_fake_logits,
+                    d_real_logits=d_real_logits,
                     epoch=epoch,
                     it=it,
                 )
+                real_are_real_samples_counter = 0
+                fake_are_fake_samples_counter = 0
+                real_samples_counter = 0
+                fake_samples_counter = 0
                 total_d_loss = 0.0
                 total_g_loss = 0.0
                 counter = 0
 
             counter += 1
 
-    def log_training(self, d_loss, g_loss, generated_images, epoch, it):
+    def log_training(
+        self,
+        d_loss,
+        g_loss,
+        fake_images,
+        real_images,
+        d_fake_logits,
+        d_real_logits,
+        epoch,
+        it,
+        real_are_real,
+        fake_are_fake,
+    ):
         if self.log:
             curr_step = epoch * self.steps_per_epoch + it
-
+            real_are_real_images, real_are_fake_images = split_images_on_disc(
+                real_images, d_real_logits
+            )
+            fake_are_real_images, fake_are_fake_images = split_images_on_disc(
+                fake_images, d_fake_logits
+            )
             with self.summary_writer.as_default():
                 tf.summary.scalar("losses/d_loss", d_loss, step=curr_step)
                 tf.summary.scalar("losses/g_loss", g_loss, step=curr_step)
+                tf.summary.scalar("accuracy/real", real_are_real, step=curr_step)
+                tf.summary.scalar("accuracy/fake", fake_are_fake, step=curr_step)
                 tf.summary.image(
-                    f"generated_{epoch}_{it}.jpg",
-                    generated_images,
+                    f"fake/are_fake/{epoch}_{it}.jpg",
+                    fake_are_fake_images,
                     max_outputs=25,
                     step=curr_step,
+                    description="Fake images that the discriminator says are fake",
+                )
+                tf.summary.image(
+                    f"fake/are_real/{epoch}_{it}.jpg",
+                    fake_are_real_images,
+                    max_outputs=25,
+                    step=curr_step,
+                    description="Fake images that the discriminator says are real",
+                )
+                tf.summary.image(
+                    f"real/are_fake/{epoch}_{it}.jpg",
+                    real_are_fake_images,
+                    max_outputs=25,
+                    step=curr_step,
+                    description="Real images that the discriminator says are fake",
+                )
+                tf.summary.image(
+                    f"real/are_real/{epoch}_{it}.jpg",
+                    real_are_real_images,
+                    max_outputs=25,
+                    step=curr_step,
+                    description="Real images that the discriminator says are real",
                 )
 
             self.comet.log_metrics(
                 {"d_loss": d_loss, "g_loss": g_loss}, step=curr_step, epoch=epoch
             )
-            fig = show_batch(generated_images)
+            fig = show_batch(fake_images, labels=disc_preds_to_label(d_fake_logits))
             self.comet.log_figure(
-                figure=fig,
-                figure_name="" f"generated_{epoch}_{it}.jpg",
-                step=curr_step,
+                figure=fig, figure_name="" f"fake_{epoch}_{it}.jpg", step=curr_step,
+            )
+            plt.close(fig)
+            fig = show_batch(real_images, labels=disc_preds_to_label(d_real_logits))
+            self.comet.log_figure(
+                figure=fig, figure_name="" f"real_{epoch}_{it}.jpg", step=curr_step,
             )
             plt.close(fig)
 

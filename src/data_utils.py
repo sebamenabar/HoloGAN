@@ -1,5 +1,21 @@
+import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+
+
+def split_images_on_disc(images, disc_logits):
+    if len(disc_logits.shape) == 2:
+        disc_logits = tf.squeeze(disc_logits, 1)
+    are_real = disc_logits >= 0.5
+    return images[are_real], images[~are_real]
+
+
+def disc_preds_to_label(disc_logits):
+    if len(disc_logits.shape) == 2:
+        disc_logits = tf.squeeze(disc_logits, 1)
+    disc_p = tf.math.sigmoid(disc_logits)
+    labels = np.where((disc_p >= 0.5).numpy(), "Real", "False")
+    return labels
 
 
 def decode_img(img, img_height, img_width):
@@ -20,6 +36,8 @@ def process_path(file_path, img_height, img_width):
 
 
 def show_batch(image_batch, labels=None):
+    if (image_batch < 0).numpy().any():
+        image_batch = (image_batch + 1) / 2
     fig = plt.figure(figsize=(10, 10))
     for n in range(min(25, image_batch.shape[0])):
         ax = plt.subplot(5, 5, n + 1)
@@ -55,9 +73,9 @@ def prepare_for_training(ds, batch_size, cache=True, shuffle_buffer_size=1000):
 
     return ds
 
+
 def image_grid(x, size=5):
-    t = tf.unstack(x[:size * size], num=size*size, axis=0)
-    rows = [tf.concat(t[i*size:(i+1)*size], axis=0) 
-            for i in range(size)]
+    t = tf.unstack(x[: size * size], num=size * size, axis=0)
+    rows = [tf.concat(t[i * size : (i + 1) * size], axis=0) for i in range(size)]
     image = tf.concat(rows, axis=1)
     return image[None]

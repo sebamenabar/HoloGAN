@@ -16,6 +16,7 @@ train:
       beta_1: 0.5
       beta_2: 0.999
     update_freq: 2
+    fixed_z: False
   discriminator:
     optimizer:
       learning_rate: 0.0001
