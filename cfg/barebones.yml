@@ -3,13 +3,13 @@ experiment_name: 'barebones'
 comet_project_name: 'train-gan'
 
 train:
-  data_dir: 'one_image_dataset/'
+  data_dir: '/mnt/ialabnas/datasets/CLEVR_v1.0/images/train'
   batch_size: 64
   epochs: 50
   snapshot_interval: 5
   image_height: 64
   image_width: 64
-  it_log_interval: 1
+  it_log_interval: 500
   generator:
     optimizer:
       learning_rate: 0.0001
