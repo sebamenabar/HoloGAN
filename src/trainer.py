@@ -253,10 +253,10 @@ class Trainer:
             #     total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
 
             pbar.set_postfix(
-                g_loss=f"{g_loss.numpy():.4f} ({total_g_loss / (counter):.4f})",
+                g_loss=f"{g_loss.numpy():.2f} ({total_g_loss / (counter):.2f})",
                 d_loss=f"{d_loss.numpy():.4f} ({total_d_loss / (counter):.4f})",
-                real_are_real=f"{real_are_real / d_real_logits.shape[0]} ({real_are_real_samples_counter / real_samples_counter})",
-                fake_are_fake=f"{fake_are_fake / d_fake_logits.shape[0]} ({fake_are_fake_samples_counter / fake_samples_counter})",
+                rrr=f"{real_are_real / d_real_logits.shape[0]:.1f} ({real_are_real_samples_counter / real_samples_counter:.1f})",
+                frf=f"{fake_are_fake / d_fake_logits.shape[0]:.1f} ({fake_are_fake_samples_counter / fake_samples_counter:.1f})",
             )
 
             if it % (self.cfg.train.it_log_interval) == 0:
@@ -304,33 +304,53 @@ class Trainer:
                 fake_images, d_fake_logits
             )
             with self.summary_writer.as_default():
-                tf.summary.scalar("losses/d_loss", d_loss, step=curr_step)
-                tf.summary.scalar("losses/g_loss", g_loss, step=curr_step)
-                tf.summary.scalar("accuracy/real", real_are_real, step=curr_step)
-                tf.summary.scalar("accuracy/fake", fake_are_fake, step=curr_step)
+                tf.summary.scalar(
+                    "losses/d_loss",
+                    d_loss,
+                    step=curr_step,
+                    description="Average of predicting real images as real and fake as fake",
+                )
+                tf.summary.scalar(
+                    "losses/g_loss",
+                    g_loss,
+                    step=curr_step,
+                    description="Predicting fake images as real",
+                )
+                tf.summary.scalar(
+                    "accuracy/real",
+                    real_are_real,
+                    step=curr_step,
+                    description="Real images classified as real",
+                )
+                tf.summary.scalar(
+                    "accuracy/fake",
+                    fake_are_fake,
+                    step=curr_step,
+                    description="Fake images classified as fake",
+                )
                 tf.summary.image(
-                    f"fake/are_fake/{epoch}_{it}.jpg",
+                    f"{epoch}-{curr_step}-fake/are_fake",
                     fake_are_fake_images,
                     max_outputs=25,
                     step=curr_step,
                     description="Fake images that the discriminator says are fake",
                 )
                 tf.summary.image(
-                    f"fake/are_real/{epoch}_{it}.jpg",
+                    f"{epoch}-{curr_step}-fake/are_real",
                     fake_are_real_images,
                     max_outputs=25,
                     step=curr_step,
                     description="Fake images that the discriminator says are real",
                 )
                 tf.summary.image(
-                    f"real/are_fake/{epoch}_{it}.jpg",
+                    f"{epoch}-{curr_step}-real/are_fake",
                     real_are_fake_images,
                     max_outputs=25,
                     step=curr_step,
                     description="Real images that the discriminator says are fake",
                 )
                 tf.summary.image(
-                    f"real/are_real/{epoch}_{it}.jpg",
+                    f"{epoch}-{curr_step}-real/are_real",
                     real_are_real_images,
                     max_outputs=25,
                     step=curr_step,
