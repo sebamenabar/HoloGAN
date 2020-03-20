@@ -20,6 +20,7 @@ __C.logcomet = False
 
 __C.train = edict(
     data_dir="",
+    resume='',
     batch_size=64,
     epochs=50,
     snapshot_interval=5,
@@ -46,6 +47,7 @@ __C.model = edict(
         filters=[64, 64, 64],
         ks=[1, 4, 4],
         strides=[1, 2, 2],
+        use_learnable_proj=True
     ),
     discriminator=edict(
         filters=[64, 128, 256, 512], ks=[5, 5, 5, 5], strides=[2, 2, 2, 2],

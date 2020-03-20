@@ -82,6 +82,8 @@ if __name__ == "__main__":
         cfg.comet_project_name = args.comet_project_name
     if args.data_dir:
         cfg.train.data_dir = args.data_dir
+    if args.resume:
+        cfg.train.resume = args.resume
 
     manual_seed = (
         args.manual_seed

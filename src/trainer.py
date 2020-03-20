@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from comet_ml import Experiment
 from tqdm.autonotebook import tqdm
 
+from sampling_utils import sample_z, sample_view
 from model import Generator, Discriminator
 from misc_utils import mkdir_p, flatten_json_iterative_solution
 from data_utils import (
@@ -115,14 +116,12 @@ class Trainer:
         self.print_info()
 
         if self.cfg.train.generator.fixed_z:
-            self.z_bg = tf.random.uniform(
-                (1, self.generator.z_dim_bg), minval=-1, maxval=1
-            )
-            self.z_fg = tf.random.uniform(
-                (1, 1, self.generator.z_dim_fg), minval=-1, maxval=1
-            )
+            self.z_bg = sample_z(1, self.generator.z_dim_bg, num_objects=1)
+            self.z_fg = sample_z(1, self.generator.z_dim_fg, num_objects=1)
+            self.bg_view = sample_view(1, num_objects=1)
+            self.fg_view = sample_view(1, num_objects=1)
         else:
-            self.z_bg = self.z_fg = None
+            self.z_bg = self.z_fg = self.bg_view = self.fg_view = None
 
     def prepare_dataset(self, data_dir):
         self.data_dir = data_dir
@@ -156,29 +155,29 @@ class Trainer:
     def generator_loss(self, generated):
         return self.bce(tf.ones_like(generated), generated)
 
-    def generate_random_noise(self, batch_size, num_objects=(3, 10)):
-        z_bg = tf.random.uniform(
-            (batch_size, self.generator.z_dim_bg), minval=-1, maxval=1
-        )
-        num_objs = tf.random.uniform(
-            (batch_size,),
-            minval=num_objects[0],
-            maxval=num_objects[1] + 1,
-            dtype=tf.int32,
-        )
-        tensors = []
-        max_len = max(num_objs)
-        for no in num_objs:
-            _t = tf.random.uniform((no, self.generator.z_dim_fg), minval=-1, maxval=1)
-            _z = tf.zeros((max_len - no, self.generator.z_dim_fg), dtype=tf.float32)
-            _t = tf.concat((_t, _z), axis=0)
-            tensors.append(_t)
-        z_fg = tf.stack(tensors, axis=0)
+    # def generate_random_noise(self, batch_size, num_objects=(3, 10)):
+    #     z_bg = tf.random.uniform(
+    #         (batch_size, self.generator.z_dim_bg), minval=-1, maxval=1
+    #     )
+    #     num_objs = tf.random.uniform(
+    #         (batch_size,),
+    #         minval=num_objects[0],
+    #         maxval=num_objects[1] + 1,
+    #         dtype=tf.int32,
+    #     )
+    #     tensors = []
+    #     max_len = max(num_objs)
+    #     for no in num_objs:
+    #         _t = tf.random.uniform((no, self.generator.z_dim_fg), minval=-1, maxval=1)
+    #         _z = tf.zeros((max_len - no, self.generator.z_dim_fg), dtype=tf.float32)
+    #         _t = tf.concat((_t, _z), axis=0)
+    #         tensors.append(_t)
+    #     z_fg = tf.stack(tensors, axis=0)
 
-        return z_bg, z_fg
+    #     return z_bg, z_fg
 
-    def batch_logits(self, image_batch, z_bg, z_fg):
-        generated = self.generator(z_bg, z_fg)
+    def batch_logits(self, image_batch, z_bg, z_fg, bg_view, fg_view):
+        generated = self.generator(z_bg, z_fg, bg_view, fg_view)
 
         d_fake_logits = self.discriminator(generated, training=True)
         image_batch = (image_batch * 2) - 1
@@ -216,13 +215,19 @@ class Trainer:
                 z_bg = tf.repeat(self.z_bg, bsz, axis=0)
                 z_fg = tf.repeat(self.z_fg, bsz, axis=0)
             else:
-                z_bg, z_fg = self.generate_random_noise(
-                    bsz, (3, min(10, 3 + 1 * (epoch // 2)))
+                z_bg = sample_z(bsz, self.generator.z_dim_bg, num_objects=1)
+                z_fg = sample_z(
+                    bsz,
+                    self.generator.z_dim_fg,
+                    num_objects=(3, min(10, 3 + 1 * (epoch // 2))),
                 )
+                bg_view = sample_view(batch_size=1, num_objects=1)
+                fg_view = sample_view(batch_size=1, num_objects=z_fg.shape[1])
+
             with tf.GradientTape(persistent=True) as tape:
                 # fake img
                 d_fake_logits, d_real_logits, generated = self.batch_logits(
-                    image_batch, z_bg, z_fg
+                    image_batch, z_bg, z_fg, bg_view, fg_view
                 )
                 d_loss = self.discriminator_loss(d_real_logits, d_fake_logits)
                 g_loss = self.generator_loss(d_fake_logits)

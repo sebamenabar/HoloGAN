@@ -11,6 +11,7 @@ from tensorflow.keras.layers import (
 )
 
 from layers import AdaIN, InstanceNorm, SpectralNorm
+from transformation_utils import tf_3d_transform, transform_voxel_to_match_image
 
 
 class ObjectGenerator(Model):
@@ -18,11 +19,11 @@ class ObjectGenerator(Model):
         self,
         z_dim,
         w_dim,
+        use_learnable_proj=True,  # TEMP: to replace with perspective projection
         w_shape=(4, 4, 4),
         upconv_flters=[128, 64],
         upconv_ks=[3, 3],  # for upconvolution, ks: kernel_size
         upconv_strides=[2, 2],
-        use_learnable_proj=True,  # TEMP: to replace with perspective projection
     ):
         super().__init__()
 
@@ -69,6 +70,8 @@ class ObjectGenerator(Model):
                 kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
                 bias_initializer="zeros",
             )
+        else:
+            print('Using 3D affine transformations for objects')
 
     def call(self, z, view_in=None):
         """
@@ -86,6 +89,8 @@ class ObjectGenerator(Model):
         else:
             bsz, _ = z.shape
             num_objs = 1
+        if view_in is not None and len(view_in.shape) == 3:
+            view_in = tf.reshape(view_in, (bsz * num_objs, 9))
 
         w = tf.repeat(tf.expand_dims(self.w, 0), bsz * num_objs, axis=0, name="w")
         h = self.adain0(w, z)
@@ -105,7 +110,14 @@ class ObjectGenerator(Model):
             h2_proj2 = self.proj2(h2_proj1)
             h2_proj2 = self.lrelu(h2_proj2)
 
-            return tf.reshape(h2_proj2, (bsz, num_objs, *h2_proj2.shape[1:]))
+            out = h2_proj2
+        else:
+            h_rotated = tf_3d_transform(h, view_in, 16, 16)
+            h_rotated = transform_voxel_to_match_image(h_rotated)
+
+            out = h_rotated
+
+        return tf.reshape(out, (bsz, num_objs, *out.shape[1:]))
 
 
 class Generator(Model):
@@ -118,6 +130,7 @@ class Generator(Model):
         filters=[64, 64, 64],
         ks=[1, 4, 4],
         strides=[1, 2, 2],
+        use_learnable_proj=True
     ):
         super().__init__()
 
@@ -126,8 +139,8 @@ class Generator(Model):
         # self.lrelu = K.layers.LeakyReLU(alpha=0.2)
 
         self.lrelu = LeakyReLU(alpha=0.2)
-        self.bg_generator = ObjectGenerator(z_dim_bg, w_dim_bg)
-        self.fg_generator = ObjectGenerator(z_dim_fg, w_dim_fg)
+        self.bg_generator = ObjectGenerator(z_dim_bg, w_dim_bg, use_learnable_proj)
+        self.fg_generator = ObjectGenerator(z_dim_fg, w_dim_fg, use_learnable_proj)
 
         self.deconvs = []
         for f, k, s in zip(filters, ks, strides):
@@ -152,14 +165,14 @@ class Generator(Model):
         )
 
     # @tf.function
-    def call(self, z_bg, z_fg):
+    def call(self, z_bg, z_fg, view_in_bg, view_in_fg):
         bsz = z_bg.shape[0]
 
         bg = self.bg_generator(
-            z_bg, None
+            z_bg, view_in_bg,
         )  # (bsz, 1, height, width, depth, num_channels)
         fg = self.fg_generator(
-            z_fg, None
+            z_fg, view_in_fg,
         )  # (bsz, num_objects, height, width, depth, num_channels)
         composed_scene = tf.concat((bg, fg), axis=1)
         composed_scene = tf.math.reduce_max(
