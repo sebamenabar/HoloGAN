@@ -181,8 +181,8 @@ class Trainer:
 
         d_fake_logits = self.discriminator(generated, training=True)
         image_batch = (image_batch * 2) - 1
-        if self.cfg.train.discriminator.random_noise:
-            image_batch = image_batch + tf.random.normal(image_batch.shape, stddev=0.02)
+        if self.cfg.train.discriminator.random_noise or self.curr_step <= 2000:
+            image_batch = image_batch + tf.random.normal(image_batch.shape, stddev=0.01)
         d_real_logits = self.discriminator(image_batch, training=True,)
 
         return d_fake_logits, d_real_logits, generated
@@ -210,10 +210,12 @@ class Trainer:
         for it, image_batch in pbar:
             bsz = image_batch.shape[0]
             # generated random noise
-            if self.z_bg and self.z_fg:
+            if self.z_bg is not None:
                 # For overfitting one sample and debugging
                 z_bg = tf.repeat(self.z_bg, bsz, axis=0)
                 z_fg = tf.repeat(self.z_fg, bsz, axis=0)
+                bg_view = self.bg_view
+                fg_view = self.fg_view
             else:
                 z_bg = sample_z(bsz, self.generator.z_dim_bg, num_objects=1)
                 z_fg = sample_z(
@@ -221,8 +223,14 @@ class Trainer:
                     self.generator.z_dim_fg,
                     num_objects=(3, min(10, 3 + 1 * (epoch // 2))),
                 )
-                bg_view = sample_view(batch_size=1, num_objects=1)
-                fg_view = sample_view(batch_size=1, num_objects=z_fg.shape[1])
+                bg_view = sample_view(
+                    batch_size=bsz,
+                    num_objects=1,
+                    azimuth_range=(-20, 20),
+                    elevation_range=(-10, 10),
+                    scale_range=(0.9, 1.1),
+                )
+                fg_view = sample_view(batch_size=bsz, num_objects=z_fg.shape[1])
 
             with tf.GradientTape(persistent=True) as tape:
                 # fake img
