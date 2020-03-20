@@ -83,24 +83,33 @@ class Trainer:
         if cfg.cfg_file:
             self.comet.log_asset(cfg.cfg_file)
 
+        self.start_epoch = tf.Variable(0)
+        self.curr_step = tf.Variable(0)
+        self.ckpt = tf.train.Checkpoint(
+            generator=self.generator,
+            discriminator=self.discriminator,
+            g_optimizer=self.g_optimizer,
+            d_optimizer=self.d_optimizer,
+            start_epoch=self.start_epoch,
+            curr_step=self.curr_step,
+        )
+        if cfg.train.resume:
+            ckpt_resumer = tf.train.CheckpointManager(
+                self.ckpt, cfg.train.resume, max_to_keep=3,
+            )
+            # if a checkpoint exists, restore the latest checkpoint.
+            if ckpt_resumer.latest_checkpoint:
+                self.ckpt.restore(ckpt_resumer.latest_checkpoint)
+                print("Latest checkpoint restored!!", ckpt_resumer.latest_checkpoint)
+                print(
+                    f"Last epoch trained:{self.start_epoch.numpy()}, Current step: {self.curr_step.numpy()}"
+                )
         if self.log:
             with open(osp.join(self.log_dir, "cfg.json"), "w") as f:
                 json.dump(cfg, f, indent=4)
-
-            self.ckpt = tf.train.Checkpoint(
-                generator=self.generator,
-                discriminator=self.discriminator,
-                g_optimizer=self.g_optimizer,
-                d_optimizer=self.d_optimizer,
-            )
-
             self.ckpt_manager = tf.train.CheckpointManager(
                 self.ckpt, self.model_dir, max_to_keep=3
             )
-            # if a checkpoint exists, restore the latest checkpoint.
-            if self.ckpt_manager.latest_checkpoint:
-                self.ckpt.restore(self.ckpt_manager.latest_checkpoint)
-                print("Latest checkpoint restored!!",)
 
         self.prepare_dataset(self.cfg.train.data_dir)
         self.print_info()
@@ -296,7 +305,7 @@ class Trainer:
         fake_are_fake,
     ):
         if self.log:
-            curr_step = epoch * self.steps_per_epoch + it
+            curr_step = (self.curr_step + it).numpy()
             real_are_real_images, real_are_fake_images = split_images_on_disc(
                 real_images, d_real_logits
             )
@@ -353,11 +362,13 @@ class Trainer:
 
     def train(self):
         print("Start training")
-        for epoch in range(self.cfg.train.epochs):
+        for epoch in range(self.start_epoch.numpy(), self.cfg.train.epochs):
             with self.comet.train():
                 self.train_epoch(epoch)
+            self.curr_step.assign_add(self.steps_per_epoch)
+            self.start_epoch.assign_add(1)
             if self.log and (((epoch + 1) % self.cfg.train.snapshot_interval) == 0):
-                self.ckpt_manager.save(epoch)
+                self.ckpt_manager.save(epoch + 1)
 
     def save_model(self, epoch):
         pass
