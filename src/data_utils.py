@@ -50,7 +50,7 @@ def show_batch(image_batch, labels=None):
     return fig
 
 
-def prepare_for_training(ds, batch_size, cache=True, shuffle_buffer_size=1000):
+def prepare_for_training(ds, batch_size, cache=True, shuffle_buffer_size=500):
     # This is a small dataset, only load it once, and keep it in memory.
     # use `.cache(filename)` to cache preprocessing work for datasets that don't
     # fit in memory.
@@ -69,13 +69,13 @@ def prepare_for_training(ds, batch_size, cache=True, shuffle_buffer_size=1000):
 
     # `prefetch` lets the dataset fetch batches in the background while the model
     # is training.
-    ds = ds.prefetch(buffer_size=batch_size)
+    ds = ds.prefetch(buffer_size=batch_size * 8)
 
     return ds
 
 
 def image_grid(x, size=5):
     t = tf.unstack(x[: size * size], num=size * size, axis=0)
-    rows = [tf.concat(t[i * size : (i + 1) * size], axis=0) for i in range(size)]
+    rows = [tf.concat(t[i * size:(i + 1) * size], axis=0) for i in range(size)]
     image = tf.concat(rows, axis=1)
     return image[None]

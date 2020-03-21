@@ -164,7 +164,7 @@ class Generator(Model):
             bias_initializer="zeros",
         )
 
-    # @tf.function
+    @tf.function
     def call(self, z_bg, z_fg, view_in_bg, view_in_fg):
         bsz = z_bg.shape[0]
 

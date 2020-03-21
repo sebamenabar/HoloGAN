@@ -331,6 +331,7 @@ def tf_interpolate(voxel, x, y, z, out_size):
     return output
 
 
+@tf.function
 def tf_3d_transform(voxel_array, transform_params, in_size=64, out_size=64):
     batch_size = voxel_array.shape[0]
     n_channels = voxel_array.shape[4]
@@ -357,6 +358,7 @@ def tf_3d_transform(voxel_array, transform_params, in_size=64, out_size=64):
     return target
 
 
+@tf.function
 def transform_voxel_to_match_image(tensor):
     tensor = tf.transpose(tensor, [0, 2, 1, 3, 4])
     tensor = tensor[:, ::-1, :, :, :]

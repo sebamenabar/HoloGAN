@@ -4,6 +4,7 @@ import sys
 import json
 import math
 import glob
+import gc
 
 import tensorflow as tf
 from tensorflow.keras import optimizers, losses
@@ -190,13 +191,15 @@ class Trainer:
     # @tf.function
     def train_epoch(self, epoch):
         train_iter = prepare_for_training(
-            self.labeled_ds, self.cfg.train.batch_size, cache=True
+            self.labeled_ds, self.cfg.train.batch_size, cache=False,
         )
         pbar = tqdm(
             enumerate(train_iter),
             total=self.steps_per_epoch,
             ncols=20,
             desc=f"Epoch {epoch}",
+            mininterval=10,
+            miniters=50,
         )
         total_d_loss = 0.0
         total_g_loss = 0.0
@@ -252,6 +255,8 @@ class Trainer:
             g_gradients = tape.gradient(g_loss, g_variables)
             self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
 
+            del tape
+
             real_samples_counter += d_real_logits.shape[0]
             fake_samples_counter += d_fake_logits.shape[0]
 
@@ -279,6 +284,7 @@ class Trainer:
                 d_loss=f"{d_loss.numpy():.4f} ({total_d_loss / (counter):.4f})",
                 rrr=f"{real_are_real / d_real_logits.shape[0]:.1f} ({real_are_real_samples_counter / real_samples_counter:.1f})",
                 frf=f"{fake_are_fake / d_fake_logits.shape[0]:.1f} ({fake_are_fake_samples_counter / fake_samples_counter:.1f})",
+                refresh=False,
             )
 
             if it % (self.cfg.train.it_log_interval) == 0:
@@ -303,6 +309,9 @@ class Trainer:
                 counter = 0
 
             counter += 1
+            gc.collect()
+
+        del train_iter
 
     def log_training(
         self,
