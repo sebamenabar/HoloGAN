@@ -1,98 +1,99 @@
-import tensorflow as tf
-import tensorflow.keras as K
-from tensorflow.keras import Model
-from tensorflow.keras.layers import (
-    Dense,
-    Conv2D,
-    Flatten,
-    LeakyReLU,
-    Conv2DTranspose,
-    Conv3DTranspose,
+import torch
+import torch.nn as nn
+
+from layers import AdaIN
+from transformation_utils import (
+    generate_inv_transform_matrix,
+    transform_voxel_to_match_image,
 )
 
-from layers import AdaIN, InstanceNorm, SpectralNorm
-from transformation_utils import tf_3d_transform, transform_voxel_to_match_image
 
-
-class ObjectGenerator(Model):
+class ObjectGenerator(nn.Module):
     def __init__(
         self,
         z_dim,
         w_dim,
         use_learnable_proj=True,  # TEMP: to replace with perspective projection
         w_shape=(4, 4, 4),
-        upconv_flters=[128, 64],
+        upconv_filters=[128, 64],
         upconv_ks=[3, 3],  # for upconvolution, ks: kernel_size
         upconv_strides=[2, 2],
+        upconv_out_padding=[1, 1],
+        upconv_padding=[1, 1],
     ):
         super().__init__()
 
         self.z_dim = z_dim
         self.w_dim = w_dim
         self.w_shape = w_shape
+        self.upconv_filters = upconv_filters
         self.use_learnable_proj = use_learnable_proj
 
         self.adain0 = AdaIN(w_dim, z_dim)
-        self.lrelu = LeakyReLU(alpha=0.2)
-        self.w = tf.Variable(
-            tf.random.normal((*w_shape, w_dim), stddev=0.02), trainable=True
-        )
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2)
+        self.w = nn.Parameter(torch.normal(0, 0.02, (1, w_dim, *w_shape),))
 
-        self.deconvs = []
-        self.adains = []
-        for filters, ks, stride in zip(upconv_flters, upconv_ks, upconv_strides):
-            self.deconvs.append(
-                Conv3DTranspose(
-                    filters=filters,
+        in_channels = w_dim
+        deconvs = []
+        adains = []
+        for filters, ks, stride, out_padding, padding in zip(
+            upconv_filters,
+            upconv_ks,
+            upconv_strides,
+            upconv_out_padding,
+            upconv_padding,
+        ):
+            deconvs.append(
+                nn.ConvTranspose3d(
+                    in_channels=in_channels,
+                    out_channels=filters,
                     kernel_size=ks,
-                    strides=stride,
-                    padding="same",
-                    kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
-                    bias_initializer="zeros",
+                    stride=stride,
+                    output_padding=out_padding,
+                    padding=padding,
                 )
             )
-            self.adains.append(AdaIN(filters, z_dim))
+            adains.append(AdaIN(filters, z_dim))
+
+            in_channels = filters
+
+        self.deconvs = nn.ModuleList(deconvs)
+        self.adains = nn.ModuleList(adains)
 
         if use_learnable_proj:
-            self.proj1 = K.layers.Conv3DTranspose(
-                filters=upconv_flters[-1],
-                kernel_size=(3, 3, 3),
-                strides=(1, 1, 1),
-                padding="same",
-                kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
-                bias_initializer="zeros",
+            self.proj1 = nn.ConvTranspose3d(
+                in_channels=upconv_filters[-1],
+                out_channels=upconv_filters[-1],
+                kernel_size=3,
+                stride=1,
+                padding=1,
             )
-            self.proj2 = K.layers.Conv3DTranspose(
-                filters=upconv_flters[-1],
-                kernel_size=(3, 3, 3),
-                strides=(1, 1, 1),
-                padding="same",
-                kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
-                bias_initializer="zeros",
+            self.proj2 = nn.ConvTranspose3d(
+                in_channels=upconv_filters[-1],
+                out_channels=upconv_filters[-1],
+                kernel_size=3,
+                stride=1,
+                padding=1,
             )
         else:
-            print('Using 3D affine transformations for objects')
+            print("USING 3D TRANSFORM FOR OBJECT PROJECTION")
 
-    def call(self, z, view_in=None):
-        """
-        z: (bsz, num_objs, z_dim)
-        view_in: (bsz, num_objs, 6)
-        """
-        z_dim = z.shape[-1]
+    def forward(self, z, view_in=None):
+        z_dim = z.size(-1)
         assert (
             z_dim == self.z_dim
         ), f"Input dimension ({z_dim}) does not match expected value ({self.z_dim})"
 
-        if len(z.shape) == 3:
-            bsz, num_objs, _ = z.shape
-            z = tf.reshape(z, (bsz * num_objs, self.z_dim))
+        if len(z.size()) == 3:
+            bsz, num_objs, _ = z.size()
+            z = z.view(bsz * num_objs, self.z_dim)
         else:
-            bsz, _ = z.shape
+            bsz, _ = z.size()
             num_objs = 1
-        if view_in is not None and len(view_in.shape) == 3:
-            view_in = tf.reshape(view_in, (bsz * num_objs, 9))
+        if view_in is not None and len(view_in.size()) == 3:
+            view_in = view_in.view(bsz * num_objs, 9)
 
-        w = tf.repeat(tf.expand_dims(self.w, 0), bsz * num_objs, axis=0, name="w")
+        w = self.w.repeat(bsz * num_objs, 1, 1, 1, 1)
         h = self.adain0(w, z)
         h = self.lrelu(h)
 
@@ -101,8 +102,6 @@ class ObjectGenerator(Model):
             h = adain(h, z)
             h = self.lrelu(h)
 
-        # TODO 3d perspective transform
-        # TEMP replace perspective projection with learnable projection
         if self.use_learnable_proj:
             h2_proj1 = self.proj1(h)
             h2_proj1 = self.lrelu(h2_proj1)
@@ -112,15 +111,18 @@ class ObjectGenerator(Model):
 
             out = h2_proj2
         else:
-            h_rotated = tf_3d_transform(h, view_in, 16, 16)
+            A = generate_inv_transform_matrix(view_in)
+            A = A[:, :3]
+            grid = nn.functional.affine_grid(A, h.size())
+            h_rotated = nn.functional.grid_sample(h, grid)
             h_rotated = transform_voxel_to_match_image(h_rotated)
 
             out = h_rotated
 
-        return tf.reshape(out, (bsz, num_objs, *out.shape[1:]))
+        return out.view(bsz, num_objs, *out.size()[1:])
 
 
-class Generator(Model):
+class Generator(nn.Module):
     def __init__(
         self,
         z_dim_bg=30,
@@ -130,43 +132,53 @@ class Generator(Model):
         filters=[64, 64, 64],
         ks=[1, 4, 4],
         strides=[1, 2, 2],
-        use_learnable_proj=True
+        upconv_paddings=[0, 1, 1],
+        upconv_out_paddings=[0, 0, 0],
+        use_learnable_proj=True,
     ):
         super().__init__()
 
         self.z_dim_bg = z_dim_bg
         self.z_dim_fg = z_dim_fg
-        # self.lrelu = K.layers.LeakyReLU(alpha=0.2)
 
-        self.lrelu = LeakyReLU(alpha=0.2)
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2)
         self.bg_generator = ObjectGenerator(z_dim_bg, w_dim_bg, use_learnable_proj)
         self.fg_generator = ObjectGenerator(z_dim_fg, w_dim_fg, use_learnable_proj)
 
-        self.deconvs = []
-        for f, k, s in zip(filters, ks, strides):
-            self.deconvs.append(
-                Conv2DTranspose(
-                    filters=f,
+        deconvs = []
+        inst_norms = []
+        prev_out_channels = 1024
+        for f, k, s, p, op in zip(
+            filters, ks, strides, upconv_paddings, upconv_out_paddings
+        ):
+            deconvs.append(
+                nn.ConvTranspose2d(
+                    in_channels=prev_out_channels,
+                    out_channels=f,
                     kernel_size=k,
-                    strides=s,
-                    padding="same",
-                    kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
-                    bias_initializer="zeros",
+                    stride=s,
+                    padding=p,
+                    output_padding=op,
                 )
             )
+            inst_norms.append(nn.InstanceNorm2d(num_features=f, affine=True,))
+            prev_out_channels = f
 
-        self.out_conv = Conv2DTranspose(
-            filters=3,
-            kernel_size=4,
-            strides=1,
-            padding="same",
-            kernel_initializer=tf.initializers.RandomNormal(stddev=0.02),
-            bias_initializer="zeros",
+        self.deconvs = nn.ModuleList(deconvs)
+        self.inst_norms = nn.ModuleList(inst_norms)
+
+        self.out_conv = nn.ConvTranspose2d(
+            # self.out_conv = nn.Conv2d(
+            in_channels=prev_out_channels,
+            out_channels=3,
+            kernel_size=5,
+            stride=1,
+            padding=2,
+            # output_padding=1,
         )
 
-    @tf.function
-    def call(self, z_bg, z_fg, view_in_bg, view_in_fg):
-        bsz = z_bg.shape[0]
+    def forward(self, z_bg, z_fg, view_in_bg=None, view_in_fg=None):
+        bsz = z_bg.size(0)
 
         bg = self.bg_generator(
             z_bg, view_in_bg,
@@ -174,49 +186,50 @@ class Generator(Model):
         fg = self.fg_generator(
             z_fg, view_in_fg,
         )  # (bsz, num_objects, height, width, depth, num_channels)
-        composed_scene = tf.concat((bg, fg), axis=1)
-        composed_scene = tf.math.reduce_max(
-            composed_scene, axis=1, name="composed_scene"
-        )
+        composed_scene = torch.cat((bg, fg), axis=1)
+        composed_scene = torch.max(composed_scene, dim=1)[0]
 
-        h2_2d = tf.reshape(composed_scene, (bsz, 16, 16, 16 * 64))
+        h2_2d = composed_scene.view(bsz, 16 * 64, 16, 16)
         h = h2_2d
-        for deconv in self.deconvs:
-            h = self.lrelu(deconv(h))
+        for deconv, inst_norm in zip(self.deconvs, self.inst_norms):
+            h = self.lrelu(inst_norm(deconv(h)))
 
-        h = tf.math.tanh(self.out_conv(h))
+        h = torch.tanh(self.out_conv(h))
 
         return h
 
 
-class Discriminator(Model):
+class Discriminator(nn.Module):
     def __init__(
         self, filters=[64, 128, 256, 512], ks=[5, 5, 5, 5], strides=[2, 2, 2, 2],
     ):
         super().__init__()
 
-        self.flatten = Flatten()
-        self.lrelu = LeakyReLU(alpha=0.2)
-        self.convs = []
-        self.inst_norms = []
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2)
+        convs = []
+        inst_norms = []
+        prev_out_channels = 3
         for f, k, s in zip(filters, ks, strides):
-            self.convs.append(
-                Conv2D(
-                    filters=f,
-                    kernel_size=k,
-                    strides=s,
-                    padding="SAME",
-                    kernel_initializer=tf.initializers.TruncatedNormal(stddev=0.02),
-                    bias_initializer="zeros",
-                    kernel_constraint=SpectralNorm(),
+            convs.append(
+                nn.utils.spectral_norm(
+                    nn.Conv2d(
+                        in_channels=prev_out_channels,
+                        out_channels=f,
+                        kernel_size=k,
+                        stride=s,
+                    )
                 )
             )
-            self.inst_norms.append(InstanceNorm(f))
-        self.linear = Dense(1, kernel_constraint=SpectralNorm())
+            inst_norms.append(nn.InstanceNorm2d(f))
+            prev_out_channels = f
+        self.convs = nn.ModuleList(convs)
+        self.inst_norms = nn.ModuleList(inst_norms)
+        self.linear = nn.utils.spectral_norm(
+            nn.Linear(in_features=prev_out_channels, out_features=1)
+        )
 
-    @tf.function
-    def call(self, x):
+    def forward(self, x):
         for conv, norm in zip(self.convs, self.inst_norms):
             x = self.lrelu(norm(conv(x)))
 
-        return self.linear(self.flatten(x))
+        return self.linear(x.view(x.size(0), -1))

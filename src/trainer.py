@@ -6,8 +6,11 @@ import math
 import glob
 import gc
 
-import tensorflow as tf
-from tensorflow.keras import optimizers, losses
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.backends.cudnn as cudnn
+from torch.utils.tensorboard import SummaryWriter
 
 import pprint
 import matplotlib.pyplot as plt
@@ -18,15 +21,11 @@ from sampling_utils import sample_z, sample_view
 from model import Generator, Discriminator
 from misc_utils import mkdir_p, flatten_json_iterative_solution
 from data_utils import (
-    process_path,
-    prepare_for_training,
-    show_batch,
+    ImageFilelist,
     disc_preds_to_label,
     split_images_on_disc,
+    show_batch,
 )
-
-
-AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 
 class Logger(object):
@@ -59,17 +58,32 @@ class Trainer:
             mkdir_p(self.model_dir)
             self.logfile = osp.join(log_dir, "logfile.log")
             sys.stdout = Logger(logfile=self.logfile)
-            self.summary_writer = tf.summary.create_file_writer(log_dir)
+            self.summary_writer = SummaryWriter(log_dir)
         else:
             self.log = False
 
-        self.generator = Generator(**cfg.model.generator)
-        self.discriminator = Discriminator(**cfg.model.discriminator)
+        if cfg.cuda:
+            s_gpus = cfg.train.gpu_id.split(",")
+            self.gpus = [int(ix) for ix in s_gpus]
+            self.num_gpus = len(self.gpus)
 
-        self.g_optimizer = optimizers.Adam(**cfg.train.generator.optimizer)
-        self.d_optimizer = optimizers.Adam(**cfg.train.discriminator.optimizer)
+            self.device = self.gpus[0]
+            torch.cuda.set_device(self.gpus[0])
+            cudnn.benchmark = True
+        else:
+            self.device = torch.device('cpu')
 
-        self.bce = losses.BinaryCrossentropy(from_logits=True)
+        self.generator = Generator(**cfg.model.generator).to(self.device)
+        self.discriminator = Discriminator(**cfg.model.discriminator).to(self.device)
+
+        self.g_optimizer = optim.Adam(
+            self.generator.parameters(), **cfg.train.generator.optimizer
+        )
+        self.d_optimizer = optim.Adam(
+            self.discriminator.parameters(), **cfg.train.discriminator.optimizer
+        )
+
+        self.bce = nn.BCEWithLogitsLoss().to(self.device)
 
         # TODO resume model
 
@@ -82,61 +96,65 @@ class Trainer:
         self.comet.set_name(f"{cfg.experiment_name}/{cfg.run_name}")
         self.comet.log_parameters(flatten_json_iterative_solution(self.cfg))
         self.comet.log_asset_data(json.dumps(self.cfg, indent=4), file_name="cfg.json")
+        self.comet.set_model_graph(f"{self.generator}\n{self.discriminator}")
         if cfg.cfg_file:
             self.comet.log_asset(cfg.cfg_file)
 
-        self.start_epoch = tf.Variable(0)
-        self.curr_step = tf.Variable(0)
-        self.ckpt = tf.train.Checkpoint(
-            generator=self.generator,
-            discriminator=self.discriminator,
-            g_optimizer=self.g_optimizer,
-            d_optimizer=self.d_optimizer,
-            start_epoch=self.start_epoch,
-            curr_step=self.curr_step,
-        )
-        if cfg.train.resume:
-            ckpt_resumer = tf.train.CheckpointManager(
-                self.ckpt, cfg.train.resume, max_to_keep=3,
-            )
-            # if a checkpoint exists, restore the latest checkpoint.
-            if ckpt_resumer.latest_checkpoint:
-                self.ckpt.restore(ckpt_resumer.latest_checkpoint)
-                print("Latest checkpoint restored!!", ckpt_resumer.latest_checkpoint)
-                print(
-                    f"Last epoch trained:{self.start_epoch.numpy()}, Current step: {self.curr_step.numpy()}"
-                )
+        # self.start_epoch = tf.Variable(0)
+        self.curr_step = 0
+        # self.ckpt = tf.train.Checkpoint(
+        #     generator=self.generator,
+        #     discriminator=self.discriminator,
+        #     g_optimizer=self.g_optimizer,
+        #     d_optimizer=self.d_optimizer,
+        #     start_epoch=self.start_epoch,
+        #     curr_step=self.curr_step,
+        # )
+        # # if cfg.train.resume:
+        #     ckpt_resumer = tf.train.CheckpointManager(
+        #         self.ckpt, cfg.train.resume, max_to_keep=3,
+        #     )
+        #     # if a checkpoint exists, restore the latest checkpoint.
+        #     if ckpt_resumer.latest_checkpoint:
+        #         self.ckpt.restore(ckpt_resumer.latest_checkpoint)
+        #         print("Latest checkpoint restored!!", ckpt_resumer.latest_checkpoint)
+        #         print(
+        #             f"Last epoch trained:{self.start_epoch.numpy()}, Current step: {self.curr_step.numpy()}"
+        #         )
         if self.log:
             with open(osp.join(self.log_dir, "cfg.json"), "w") as f:
                 json.dump(cfg, f, indent=4)
-            self.ckpt_manager = tf.train.CheckpointManager(
-                self.ckpt, self.model_dir, max_to_keep=3
-            )
+            # self.ckpt_manager = tf.train.CheckpointManager(
+            #     self.ckpt, self.model_dir, max_to_keep=3
+            # )
 
         self.prepare_dataset(self.cfg.train.data_dir)
         self.print_info()
 
         if self.cfg.train.generator.fixed_z:
-            self.z_bg = sample_z(1, self.generator.z_dim_bg, num_objects=1)
-            self.z_fg = sample_z(1, self.generator.z_dim_fg, num_objects=1)
-            self.bg_view = sample_view(1, num_objects=1)
-            self.fg_view = sample_view(1, num_objects=1)
+            self.z_bg = sample_z(1, self.generator.z_dim_bg, num_objects=1).to(
+                self.device
+            )
+            self.z_fg = sample_z(1, self.generator.z_dim_fg, num_objects=1).to(
+                self.device
+            )
+            self.bg_view = sample_view(1, num_objects=1).to(self.device)
+            self.fg_view = sample_view(1, num_objects=1).to(self.device)
         else:
             self.z_bg = self.z_fg = self.bg_view = self.fg_view = None
 
     def prepare_dataset(self, data_dir):
-        self.data_dir = data_dir
-        self.num_tr = len(glob.glob(osp.join(self.data_dir, "*.png")))
-        self.list_ds_train = tf.data.Dataset.list_files(
-            os.path.join(self.data_dir, "*.png")
-        )
-        self.labeled_ds = self.list_ds_train.map(
-            lambda x: process_path(
-                x, self.cfg.train.image_height, self.cfg.train.image_width
-            ),
-            num_parallel_calls=AUTOTUNE,
-        )
+        self.dataset = ImageFilelist(data_dir, "*.png")
+        self.num_tr = len(self.dataset)
         self.steps_per_epoch = int(math.ceil(self.num_tr / self.cfg.train.batch_size))
+
+    def prepare_dataloader(self):
+        return torch.utils.data.DataLoader(
+            self.dataset,
+            batch_size=self.cfg.train.batch_size,
+            shuffle=True,
+            num_workers=8,
+        )
 
     def print_info(self):
         print("Using config:")
@@ -147,52 +165,28 @@ class Trainer:
 
     # lossess
     def discriminator_loss(self, real, generated):
-        real_loss = self.bce(tf.ones_like(real), real)
-        generated_loss = self.bce(tf.zeros_like(generated), generated)
+        real_loss = self.bce(torch.ones_like(real), real)
+        generated_loss = self.bce(torch.zeros_like(generated), generated)
         total_disc_loss = real_loss + generated_loss
 
         return total_disc_loss * 0.5
 
     def generator_loss(self, generated):
-        return self.bce(tf.ones_like(generated), generated)
-
-    # def generate_random_noise(self, batch_size, num_objects=(3, 10)):
-    #     z_bg = tf.random.uniform(
-    #         (batch_size, self.generator.z_dim_bg), minval=-1, maxval=1
-    #     )
-    #     num_objs = tf.random.uniform(
-    #         (batch_size,),
-    #         minval=num_objects[0],
-    #         maxval=num_objects[1] + 1,
-    #         dtype=tf.int32,
-    #     )
-    #     tensors = []
-    #     max_len = max(num_objs)
-    #     for no in num_objs:
-    #         _t = tf.random.uniform((no, self.generator.z_dim_fg), minval=-1, maxval=1)
-    #         _z = tf.zeros((max_len - no, self.generator.z_dim_fg), dtype=tf.float32)
-    #         _t = tf.concat((_t, _z), axis=0)
-    #         tensors.append(_t)
-    #     z_fg = tf.stack(tensors, axis=0)
-
-    #     return z_bg, z_fg
+        return self.bce(torch.ones_like(generated), generated)
 
     def batch_logits(self, image_batch, z_bg, z_fg, bg_view, fg_view):
         generated = self.generator(z_bg, z_fg, bg_view, fg_view)
 
-        d_fake_logits = self.discriminator(generated, training=True)
+        d_fake_logits = self.discriminator(generated)
         image_batch = (image_batch * 2) - 1
         if self.cfg.train.discriminator.random_noise or self.curr_step <= 2000:
-            image_batch = image_batch + tf.random.normal(image_batch.shape, stddev=0.01)
-        d_real_logits = self.discriminator(image_batch, training=True,)
+            image_batch = image_batch + torch.normal(0, 0.01, image_batch.size())
+        d_real_logits = self.discriminator(image_batch)
 
         return d_fake_logits, d_real_logits, generated
 
-    # @tf.function
     def train_epoch(self, epoch):
-        train_iter = prepare_for_training(
-            self.labeled_ds, self.cfg.train.batch_size, cache=False,
-        )
+        train_iter = self.prepare_dataloader()
         pbar = tqdm(
             enumerate(train_iter),
             total=self.steps_per_epoch,
@@ -210,13 +204,15 @@ class Trainer:
         fake_samples_counter = 0
 
         z_bg = z_fg = None
+        self.generator.train(True)
+        self.discriminator.train(True)
         for it, image_batch in pbar:
             bsz = image_batch.shape[0]
             # generated random noise
             if self.z_bg is not None:
                 # For overfitting one sample and debugging
-                z_bg = tf.repeat(self.z_bg, bsz, axis=0)
-                z_fg = tf.repeat(self.z_fg, bsz, axis=0)
+                z_bg = self.z_bg.repeat(bsz, 1, 1)
+                z_fg = self.z_fg.repeat(bsz, 1, 1)
                 bg_view = self.bg_view
                 fg_view = self.fg_view
             else:
@@ -235,35 +231,37 @@ class Trainer:
                 )
                 fg_view = sample_view(batch_size=bsz, num_objects=z_fg.shape[1])
 
-            with tf.GradientTape(persistent=True) as tape:
-                # fake img
-                d_fake_logits, d_real_logits, generated = self.batch_logits(
-                    image_batch, z_bg, z_fg, bg_view, fg_view
-                )
-                d_loss = self.discriminator_loss(d_real_logits, d_fake_logits)
-                g_loss = self.generator_loss(d_fake_logits)
+            image_batch = image_batch.to(self.device)
+            z_bg = z_bg.to(self.device)
+            z_fg = z_fg.to(self.device)
+            bg_view = bg_view.to(self.device)
+            fg_view = fg_view.to(self.device)
 
-            total_d_loss += d_loss.numpy()
+            d_fake_logits, d_real_logits, generated = self.batch_logits(
+                image_batch, z_bg, z_fg, bg_view, fg_view
+            )
+            d_loss = self.discriminator_loss(d_real_logits, d_fake_logits)
+            g_loss = self.generator_loss(d_fake_logits)
+
+            self.discriminator.zero_grad()
+            d_loss.backward(retain_graph=True)
+            self.d_optimizer.step()
+
+            self.generator.zero_grad()
+            g_loss.backward()
+            self.g_optimizer.step()
+
+            total_d_loss += d_loss.detach().cpu().numpy()
             # total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
-            total_g_loss += g_loss.numpy()
+            total_g_loss += g_loss.detach().cpu().numpy()
 
-            d_variables = self.discriminator.trainable_variables
-            d_gradients = tape.gradient(d_loss, d_variables)
-            self.d_optimizer.apply_gradients(zip(d_gradients, d_variables))
+            real_samples_counter += d_real_logits.size(0)
+            fake_samples_counter += d_fake_logits.size(0)
 
-            g_variables = self.generator.trainable_variables
-            g_gradients = tape.gradient(g_loss, g_variables)
-            self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
-
-            del tape
-
-            real_samples_counter += d_real_logits.shape[0]
-            fake_samples_counter += d_fake_logits.shape[0]
-
-            real_are_real = (d_real_logits >= 0).numpy().sum()
+            real_are_real = (d_real_logits >= 0).cpu().numpy().sum()
             real_are_real_samples_counter += real_are_real
 
-            fake_are_fake = (d_fake_logits < 0).numpy().sum()
+            fake_are_fake = (d_fake_logits < 0).cpu().numpy().sum()
             fake_are_fake_samples_counter += fake_are_fake
 
             # according to paper generator makes 2 steps per each step of the disc
@@ -280,8 +278,8 @@ class Trainer:
             #     total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
 
             pbar.set_postfix(
-                g_loss=f"{g_loss.numpy():.2f} ({total_g_loss / (counter):.2f})",
-                d_loss=f"{d_loss.numpy():.4f} ({total_d_loss / (counter):.4f})",
+                g_loss=f"{g_loss.detach().cpu().numpy():.2f} ({total_g_loss / (counter):.2f})",
+                d_loss=f"{d_loss.detach().cpu().numpy():.4f} ({total_d_loss / (counter):.4f})",
                 rrr=f"{real_are_real / d_real_logits.shape[0]:.1f} ({real_are_real_samples_counter / real_samples_counter:.1f})",
                 frf=f"{fake_are_fake / d_fake_logits.shape[0]:.1f} ({fake_are_fake_samples_counter / fake_samples_counter:.1f})",
                 refresh=False,
@@ -327,7 +325,7 @@ class Trainer:
         fake_are_fake,
     ):
         if self.log:
-            curr_step = (self.curr_step + it).numpy()
+            curr_step = self.curr_step + it
             real_are_real_images, real_are_fake_images = split_images_on_disc(
                 real_images, d_real_logits
             )
@@ -335,57 +333,57 @@ class Trainer:
                 fake_images, d_fake_logits
             )
             with self.summary_writer.as_default():
-                tf.summary.scalar(
+                self.summary_writer.add_scalar(
                     "losses/d_loss",
                     d_loss,
-                    step=curr_step,
-                    description="Average of predicting real images as real and fake as fake",
+                    global_step=curr_step,
+                    # description="Average of predicting real images as real and fake as fake",
                 )
-                tf.summary.scalar(
+                self.summary_writer.add_scalar(
                     "losses/g_loss",
                     g_loss,
-                    step=curr_step,
-                    description="Predicting fake images as real",
+                    global_step=curr_step,
+                    # description="Predicting fake images as real",
                 )
-                tf.summary.scalar(
+                self.summary_writer.add_scalar(
                     "accuracy/real",
                     real_are_real,
-                    step=curr_step,
-                    description="Real images classified as real",
+                    global_step=curr_step,
+                    # description="Real images classified as real",
                 )
-                tf.summary.scalar(
+                self.summary_writer.add_scalar(
                     "accuracy/fake",
                     fake_are_fake,
-                    step=curr_step,
-                    description="Fake images classified as fake",
+                    global_step=curr_step,
+                    # description="Fake images classified as fake",
                 )
-                tf.summary.image(
+                self.summary_writer.add_images(
                     f"{epoch}-{curr_step}-fake/are_fake",
                     fake_are_fake_images,
                     max_outputs=25,
-                    step=curr_step,
-                    description="Fake images that the discriminator says are fake",
+                    global_step=curr_step,
+                    # description="Fake images that the discriminator says are fake",
                 )
-                tf.summary.image(
+                self.summary_writer.add_images(
                     f"{epoch}-{curr_step}-fake/are_real",
                     fake_are_real_images,
                     max_outputs=25,
-                    step=curr_step,
-                    description="Fake images that the discriminator says are real",
+                    global_step=curr_step,
+                    # description="Fake images that the discriminator says are real",
                 )
-                tf.summary.image(
+                self.summary_writer.add_images(
                     f"{epoch}-{curr_step}-real/are_fake",
                     real_are_fake_images,
                     max_outputs=25,
-                    step=curr_step,
-                    description="Real images that the discriminator says are fake",
+                    global_step=curr_step,
+                    # description="Real images that the discriminator says are fake",
                 )
-                tf.summary.image(
+                self.summary_writer.add_images(
                     f"{epoch}-{curr_step}-real/are_real",
                     real_are_real_images,
                     max_outputs=25,
-                    step=curr_step,
-                    description="Real images that the discriminator says are real",
+                    global_step=curr_step,
+                    # description="Real images that the discriminator says are real",
                 )
 
             self.comet.log_metrics(
@@ -404,14 +402,13 @@ class Trainer:
 
     def train(self):
         print("Start training")
-        for epoch in range(self.start_epoch.numpy(), self.cfg.train.epochs):
+        for epoch in range(0, self.cfg.train.epochs):
             with self.comet.train():
                 self.train_epoch(epoch)
-            self.curr_step.assign_add(self.steps_per_epoch)
-            self.start_epoch.assign_add(1)
-            if self.log and (((epoch + 1) % self.cfg.train.snapshot_interval) == 0):
-                self.ckpt_manager.save(epoch + 1)
+            self.curr_step += self.steps_per_epoch
+            # self.start_epoch.assign_add(1)
+            # if self.log and (((epoch + 1) % self.cfg.train.snapshot_interval) == 0):
+            #     self.ckpt_manager.save(epoch + 1)
 
     def save_model(self, epoch):
         pass
-

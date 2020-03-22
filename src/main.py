@@ -10,7 +10,7 @@ import argparse
 from datetime import datetime as dt
 
 import comet_ml  # comet must be imported before tf
-import tensorflow as tf
+import torch
 
 from dotenv import load_dotenv
 
@@ -27,6 +27,7 @@ def parse_args():
         "--cfg", dest="cfg_file", help="optional config file", default=None, type=str
     )
     parser.add_argument("--manual-seed", type=int, help="manual seed")
+    parser.add_argument('--gpu',  dest='gpu_id', type=str)
 
     # Resume training
     parser.add_argument("--bsz", type=float)
@@ -84,6 +85,10 @@ if __name__ == "__main__":
         cfg.train.data_dir = args.data_dir
     if args.resume:
         cfg.train.resume = args.resume
+    if args.gpu_id:
+        cfg.gpu_id = args.gpu_id
+    if cfg.gpu_id == '-1':
+        cfg.cuda = False
 
     manual_seed = (
         args.manual_seed
@@ -91,8 +96,10 @@ if __name__ == "__main__":
         or random.randint(1, 10000)
     )
     random.seed(manual_seed)
-    tf.random.set_seed(manual_seed)
+    torch.manual_seed(manual_seed)
     cfg.manual_seed = manual_seed
+    if cfg.cuda:
+        torch.cuda.manual_seed_all(manual_seed)
 
     log = not args.no_log
     cfg.no_log = args.no_log

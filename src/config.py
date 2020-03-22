@@ -17,6 +17,8 @@ __C.experiment_name = ""
 __C.run_name = ""
 __C.comet_project_name = ""
 __C.logcomet = False
+__C.cuda = False
+__C.gpu_id='-1',
 
 __C.train = edict(
     data_dir="",
@@ -28,12 +30,12 @@ __C.train = edict(
     image_width=64,
     it_log_interval=100,
     generator=edict(
-        optimizer=edict(learning_rate=0.0001, beta_1=0.5, beta_2=0.999),
+        optimizer=edict(lr=0.0001, betas=(0.5, 0.999)),
         update_freq=2,
         fixed_z=False,
     ),
     discriminator=edict(
-        optimizer=edict(learning_rate=0.0001, beta_1=0.5, beta_2=0.999),
+        optimizer=edict(lr=0.0001, betas=(0.5, 0.999)),
         random_noise=False,
     ),
 )

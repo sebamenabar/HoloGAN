@@ -12,16 +12,14 @@ train:
   it_log_interval: 500
   generator:
     optimizer:
-      learning_rate: 0.0001
-      beta_1: 0.5
-      beta_2: 0.999
+      lr: 0.0001
+      betas: [0.5, 0.999]
     update_freq: 2
-    fixed_z: False
+    fixed_z: True
   discriminator:
     optimizer:
-      learning_rate: 0.0001
-      beta_1: 0.5
-      beta_2: 0.999
+      lr: 0.0001
+      betas: [0.5, 0.999]
     random_noise: False
 
 model:
