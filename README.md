@@ -20,4 +20,3 @@ Because I've worked a lot with this code I think I have a very good understandin
 Generated samples trained on CLEVR dataset (70.000 images) after 50 epochs. This is the model without 3D transformation that uses convolutions instead.
 
 ![](./images/clevr.svg)
-<img src="./images/clevr.svg">
