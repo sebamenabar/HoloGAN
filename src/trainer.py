@@ -4,6 +4,7 @@ import sys
 import json
 import math
 import glob
+import gc
 
 import tensorflow as tf
 from tensorflow.keras import optimizers, losses
@@ -181,8 +182,8 @@ class Trainer:
 
         d_fake_logits = self.discriminator(generated, training=True)
         image_batch = (image_batch * 2) - 1
-        if self.cfg.train.discriminator.random_noise:
-            image_batch = image_batch + tf.random.normal(image_batch.shape, stddev=0.02)
+        if self.cfg.train.discriminator.random_noise or self.curr_step <= 2000:
+            image_batch = image_batch + tf.random.normal(image_batch.shape, stddev=0.01)
         d_real_logits = self.discriminator(image_batch, training=True,)
 
         return d_fake_logits, d_real_logits, generated
@@ -190,13 +191,15 @@ class Trainer:
     # @tf.function
     def train_epoch(self, epoch):
         train_iter = prepare_for_training(
-            self.labeled_ds, self.cfg.train.batch_size, cache=True
+            self.labeled_ds, self.cfg.train.batch_size, cache=False,
         )
         pbar = tqdm(
             enumerate(train_iter),
             total=self.steps_per_epoch,
             ncols=20,
             desc=f"Epoch {epoch}",
+            mininterval=10,
+            miniters=50,
         )
         total_d_loss = 0.0
         total_g_loss = 0.0
@@ -210,10 +213,12 @@ class Trainer:
         for it, image_batch in pbar:
             bsz = image_batch.shape[0]
             # generated random noise
-            if self.z_bg and self.z_fg:
+            if self.z_bg is not None:
                 # For overfitting one sample and debugging
                 z_bg = tf.repeat(self.z_bg, bsz, axis=0)
                 z_fg = tf.repeat(self.z_fg, bsz, axis=0)
+                bg_view = self.bg_view
+                fg_view = self.fg_view
             else:
                 z_bg = sample_z(bsz, self.generator.z_dim_bg, num_objects=1)
                 z_fg = sample_z(
@@ -221,8 +226,14 @@ class Trainer:
                     self.generator.z_dim_fg,
                     num_objects=(3, min(10, 3 + 1 * (epoch // 2))),
                 )
-                bg_view = sample_view(batch_size=1, num_objects=1)
-                fg_view = sample_view(batch_size=1, num_objects=z_fg.shape[1])
+                bg_view = sample_view(
+                    batch_size=bsz,
+                    num_objects=1,
+                    azimuth_range=(-20, 20),
+                    elevation_range=(-10, 10),
+                    scale_range=(0.9, 1.1),
+                )
+                fg_view = sample_view(batch_size=bsz, num_objects=z_fg.shape[1])
 
             with tf.GradientTape(persistent=True) as tape:
                 # fake img
@@ -243,6 +254,8 @@ class Trainer:
             g_variables = self.generator.trainable_variables
             g_gradients = tape.gradient(g_loss, g_variables)
             self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
+
+            del tape
 
             real_samples_counter += d_real_logits.shape[0]
             fake_samples_counter += d_fake_logits.shape[0]
@@ -271,6 +284,7 @@ class Trainer:
                 d_loss=f"{d_loss.numpy():.4f} ({total_d_loss / (counter):.4f})",
                 rrr=f"{real_are_real / d_real_logits.shape[0]:.1f} ({real_are_real_samples_counter / real_samples_counter:.1f})",
                 frf=f"{fake_are_fake / d_fake_logits.shape[0]:.1f} ({fake_are_fake_samples_counter / fake_samples_counter:.1f})",
+                refresh=False,
             )
 
             if it % (self.cfg.train.it_log_interval) == 0:
@@ -295,6 +309,9 @@ class Trainer:
                 counter = 0
 
             counter += 1
+            gc.collect()
+
+        del train_iter
 
     def log_training(
         self,
