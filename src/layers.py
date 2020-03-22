@@ -8,6 +8,11 @@ class AdaIN(nn.Module):
         self.relu = nn.ReLU()
         self.z_proj = nn.Linear(in_features=z_dim, out_features=num_channels * 2,)
         self.ins_norm = nn.InstanceNorm3d(num_features=num_channels, affine=False)
+        self.init_params()
+
+    def init_params(self):
+        torch.nn.init.normal_(self.z_proj.weight, std=0.02)
+        torch.nn.init.zeros_(self.z_proj.bias)
 
     def forward(self, x, z):
         scale, bias = torch.chunk(self.relu(self.z_proj(z)), chunks=2, dim=-1)

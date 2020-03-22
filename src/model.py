@@ -31,7 +31,7 @@ class ObjectGenerator(nn.Module):
 
         self.adain0 = AdaIN(w_dim, z_dim)
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
-        self.w = nn.Parameter(torch.normal(0, 0.02, (1, w_dim, *w_shape),))
+        self.w = nn.Parameter(torch.normal(0, 0.02, (1, w_dim, *w_shape)))
 
         in_channels = w_dim
         deconvs = []
@@ -77,6 +77,16 @@ class ObjectGenerator(nn.Module):
             )
         else:
             print("USING 3D TRANSFORM FOR OBJECT PROJECTION")
+        self.init_params()
+
+    def init_params(self):
+        for deconv in self.deconvs:
+            nn.init.normal_(deconv.weight, std=0.02)
+            nn.init.zeros_(deconv.bias)
+        nn.init.normal_(self.proj1.weight, std=0.02)
+        nn.init.zeros_(self.proj1.bias)
+        nn.init.normal_(self.proj2.weight, std=0.02)
+        nn.init.zeros_(self.proj2.bias)
 
     def forward(self, z, view_in=None):
         z_dim = z.size(-1)
@@ -161,7 +171,7 @@ class Generator(nn.Module):
                     output_padding=op,
                 )
             )
-            inst_norms.append(nn.InstanceNorm2d(num_features=f, affine=True,))
+            # inst_norms.append(nn.InstanceNorm2d(num_features=f))
             prev_out_channels = f
 
         self.deconvs = nn.ModuleList(deconvs)
@@ -177,6 +187,13 @@ class Generator(nn.Module):
             # output_padding=1,
         )
 
+    def init_params(self):
+        for deconv in self.deconvs:
+            nn.init.normal_(deconv.weight, std=0.02)
+            nn.init.zeros_(deconv.bias)
+        nn.init.normal_(self.out_conv.weight, std=0.02)
+        nn.init.zeros_(self.out_conv.bias)
+
     def forward(self, z_bg, z_fg, view_in_bg=None, view_in_fg=None):
         bsz = z_bg.size(0)
 
@@ -191,8 +208,10 @@ class Generator(nn.Module):
 
         h2_2d = composed_scene.view(bsz, 16 * 64, 16, 16)
         h = h2_2d
-        for deconv, inst_norm in zip(self.deconvs, self.inst_norms):
-            h = self.lrelu(inst_norm(deconv(h)))
+        # for deconv, inst_norm in zip(self.deconvs, self.inst_norms):
+        for deconv in zip(self.deconvs,):
+            # h = self.lrelu(inst_norm(deconv(h)))
+            h = self.lrelu(deconv(h))
 
         h = torch.tanh(self.out_conv(h))
 
@@ -220,16 +239,28 @@ class Discriminator(nn.Module):
                     )
                 )
             )
-            inst_norms.append(nn.InstanceNorm2d(f))
+            # inst_norms.append(nn.InstanceNorm2d(f))
             prev_out_channels = f
+
         self.convs = nn.ModuleList(convs)
         self.inst_norms = nn.ModuleList(inst_norms)
         self.linear = nn.utils.spectral_norm(
             nn.Linear(in_features=prev_out_channels, out_features=1)
         )
+        self.init_params()
+
+    def init_params(self):
+        for conv in self.convs:
+            nn.init.normal_(conv.weight, std=0.02)
+            nn.init.zeros_(conv.bias)
+        nn.init.normal_(self.linear.weight, std=0.02)
+        nn.init.zeros_(self.linear.bias)
 
     def forward(self, x):
-        for conv, norm in zip(self.convs, self.inst_norms):
-            x = self.lrelu(norm(conv(x)))
+        for conv in zip(self.convs,):
+            # for conv, norm in zip(self.convs, self.inst_norms):
+            x = conv(x)
+            # x = norm(x)
+            x = self.lrelu(x)
 
         return self.linear(x.view(x.size(0), -1))
