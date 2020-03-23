@@ -1,6 +1,8 @@
-run_name: 'run1'
+run_name: 'torch-wT-run2-obj-inc-5'
 experiment_name: 'object_t'
 comet_project_name: 'train-gan'
+cuda: True
+gpu_id: '0'
 
 train:
   data_dir: '/mnt/ialabnas/datasets/CLEVR_v1.0/images/train'
@@ -10,12 +12,13 @@ train:
   image_height: 64
   image_width: 64
   it_log_interval: 500
+  obj_num_increase_epoch: 5
   generator:
     optimizer:
       lr: 0.0001
       betas: [0.5, 0.999]
     update_freq: 2
-    fixed_z: True
+    fixed_z: False
   discriminator:
     optimizer:
       lr: 0.0001

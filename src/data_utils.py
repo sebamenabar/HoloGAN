@@ -19,11 +19,12 @@ def disc_preds_to_label(disc_logits):
     if len(disc_logits.shape) == 2:
         disc_logits = torch.squeeze(disc_logits, 1)
     disc_p = torch.sigmoid(disc_logits)
-    labels = np.where((disc_p >= 0.5).cpu().numpy(), "Real", "False")
+    labels = np.where((disc_p >= 0.5).detach().cpu().numpy(), "Real", "Fake")
     return labels
 
 
 def show_batch(image_batch, labels=None):
+    image_batch = image_batch.detach().cpu().permute(0, 2, 3, 1)
     if (image_batch < 0).numpy().any():
         image_batch = (image_batch + 1) / 2
     fig = plt.figure(figsize=(10, 10))

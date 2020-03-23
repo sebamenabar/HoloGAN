@@ -25,11 +25,11 @@ def generate_inv_transform_matrix(
     # This is to rotate the objects around it's origin
     CO_inv = invT(
         translation2T(torch.tensor([[-in_size * 0.5, -in_size * 0.5, -in_size * 0.5]]))
-    ).repeat(bsz, 1, 1)
+    ).repeat(bsz, 1, 1).to(transform_params.device)
     # Move origin to new grid border
     DN_inv = invT(
         translation2T(torch.tensor([[out_size * 0.5, out_size * 0.5, out_size * 0.5]]))
-    ).repeat(bsz, 1, 1)
+    ).repeat(bsz, 1, 1).to(transform_params.device)
 
     A = torch.bmm(
         torch.bmm(
@@ -50,7 +50,7 @@ def rad2Ry(radians, requires_grad=False):
     R[:, 2, 0] = torch.sin(radians)
     R[:, 2, 2] = torch.cos(radians)
 
-    return R
+    return R.to(radians.device)
 
 
 def rad2Rx(radians, requires_grad=False):
@@ -62,7 +62,7 @@ def rad2Rx(radians, requires_grad=False):
     R[:, 1, 0] = -torch.sin(radians)
     R[:, 1, 1] = torch.cos(radians)
 
-    return R
+    return R.to(radians.device)
 
 
 def invR(R):
@@ -74,7 +74,7 @@ def translation2T(translation, requires_grad=False):
     T = torch.eye(4).unsqueeze(0).repeat(bsz, 1, 1)
     T[:, :3, 3] = translation
 
-    return T
+    return T.to(translation.device)
 
 
 def invT(T):
@@ -90,7 +90,7 @@ def scale2S(scale):
     S[:, 1, 1] = scale[:, 1]
     S[:, 2, 2] = scale[:, 2]
 
-    return S
+    return S.to(scale.device)
 
 
 def invS(S):

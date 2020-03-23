@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.backends.cudnn as cudnn
+
+# import tensorflow as tf
 from torch.utils.tensorboard import SummaryWriter
 
 import pprint
@@ -59,22 +61,30 @@ class Trainer:
             self.logfile = osp.join(log_dir, "logfile.log")
             sys.stdout = Logger(logfile=self.logfile)
             self.summary_writer = SummaryWriter(log_dir)
+            # self.summary_writer = tf.summary.create_file_writer(log_dir)
         else:
             self.log = False
 
         if cfg.cuda:
-            s_gpus = cfg.train.gpu_id.split(",")
-            self.gpus = [int(ix) for ix in s_gpus]
-            self.num_gpus = len(self.gpus)
+            # s_gpus = cfg.gpu_id.split(",")
+            # self.gpus = [int(ix) for ix in s_gpus]
+            # self.num_gpus = len(self.gpus)
 
-            self.device = self.gpus[0]
-            torch.cuda.set_device(self.gpus[0])
+            self.device = torch.device("cuda")
+            # torch.cuda.set_device(self.gpus[0])
             cudnn.benchmark = True
         else:
-            self.device = torch.device('cpu')
+            self.device = torch.device("cpu")
+
+        print("Using device", self.device)
 
         self.generator = Generator(**cfg.model.generator).to(self.device)
         self.discriminator = Discriminator(**cfg.model.discriminator).to(self.device)
+
+        print("Generator")
+        print(self.generator)
+        print("Discriminator")
+        print(self.discriminator)
 
         self.g_optimizer = optim.Adam(
             self.generator.parameters(), **cfg.train.generator.optimizer
@@ -154,6 +164,7 @@ class Trainer:
             batch_size=self.cfg.train.batch_size,
             shuffle=True,
             num_workers=8,
+            pin_memory=self.cfg.cuda,
         )
 
     def print_info(self):
@@ -165,14 +176,14 @@ class Trainer:
 
     # lossess
     def discriminator_loss(self, real, generated):
-        real_loss = self.bce(torch.ones_like(real), real)
-        generated_loss = self.bce(torch.zeros_like(generated), generated)
+        real_loss = self.bce(real, torch.ones_like(real))
+        generated_loss = self.bce(generated, torch.zeros_like(generated))
         total_disc_loss = real_loss + generated_loss
 
         return total_disc_loss * 0.5
 
     def generator_loss(self, generated):
-        return self.bce(torch.ones_like(generated), generated)
+        return self.bce(generated, torch.ones_like(generated))
 
     def batch_logits(self, image_batch, z_bg, z_fg, bg_view, fg_view):
         generated = self.generator(z_bg, z_fg, bg_view, fg_view)
@@ -220,7 +231,12 @@ class Trainer:
                 z_fg = sample_z(
                     bsz,
                     self.generator.z_dim_fg,
-                    num_objects=(3, min(10, 3 + 1 * (epoch // 2))),
+                    num_objects=(
+                        3,
+                        min(
+                            10, 3 + 1 * (epoch // self.cfg.train.obj_num_increase_epoch)
+                        ),
+                    ),
                 )
                 bg_view = sample_view(
                     batch_size=bsz,
@@ -229,7 +245,7 @@ class Trainer:
                     elevation_range=(-10, 10),
                     scale_range=(0.9, 1.1),
                 )
-                fg_view = sample_view(batch_size=bsz, num_objects=z_fg.shape[1])
+                fg_view = sample_view(batch_size=bsz, num_objects=z_fg.shape[1],)
 
             image_batch = image_batch.to(self.device)
             z_bg = z_bg.to(self.device)
@@ -237,16 +253,22 @@ class Trainer:
             bg_view = bg_view.to(self.device)
             fg_view = fg_view.to(self.device)
 
-            d_fake_logits, d_real_logits, generated = self.batch_logits(
-                image_batch, z_bg, z_fg, bg_view, fg_view
-            )
-            d_loss = self.discriminator_loss(d_real_logits, d_fake_logits)
-            g_loss = self.generator_loss(d_fake_logits)
+            generated = self.generator(z_bg, z_fg, bg_view, fg_view)
+            d_fake_logits = self.discriminator(generated.detach())
+            image_batch = (image_batch * 2) - 1
+            if self.cfg.train.discriminator.random_noise or self.curr_step <= 2000:
+                image_batch = image_batch + torch.normal(
+                    0, 0.01, image_batch.size(), device=self.device
+                )
+            d_real_logits = self.discriminator(image_batch)
 
+            d_loss = self.discriminator_loss(d_real_logits, d_fake_logits)
             self.discriminator.zero_grad()
-            d_loss.backward(retain_graph=True)
+            d_loss.backward()
             self.d_optimizer.step()
 
+            d_fake_logits = self.discriminator(generated)
+            g_loss = self.generator_loss(d_fake_logits)
             self.generator.zero_grad()
             g_loss.backward()
             self.g_optimizer.step()
@@ -332,62 +354,69 @@ class Trainer:
             fake_are_real_images, fake_are_fake_images = split_images_on_disc(
                 fake_images, d_fake_logits
             )
-            with self.summary_writer.as_default():
-                self.summary_writer.add_scalar(
-                    "losses/d_loss",
-                    d_loss,
-                    global_step=curr_step,
-                    # description="Average of predicting real images as real and fake as fake",
-                )
-                self.summary_writer.add_scalar(
-                    "losses/g_loss",
-                    g_loss,
-                    global_step=curr_step,
-                    # description="Predicting fake images as real",
-                )
-                self.summary_writer.add_scalar(
-                    "accuracy/real",
-                    real_are_real,
-                    global_step=curr_step,
-                    # description="Real images classified as real",
-                )
-                self.summary_writer.add_scalar(
-                    "accuracy/fake",
-                    fake_are_fake,
-                    global_step=curr_step,
-                    # description="Fake images classified as fake",
-                )
-                self.summary_writer.add_images(
-                    f"{epoch}-{curr_step}-fake/are_fake",
-                    fake_are_fake_images,
-                    max_outputs=25,
-                    global_step=curr_step,
-                    # description="Fake images that the discriminator says are fake",
-                )
-                self.summary_writer.add_images(
-                    f"{epoch}-{curr_step}-fake/are_real",
-                    fake_are_real_images,
-                    max_outputs=25,
-                    global_step=curr_step,
-                    # description="Fake images that the discriminator says are real",
-                )
-                self.summary_writer.add_images(
-                    f"{epoch}-{curr_step}-real/are_fake",
-                    real_are_fake_images,
-                    max_outputs=25,
-                    global_step=curr_step,
-                    # description="Real images that the discriminator says are fake",
-                )
-                self.summary_writer.add_images(
-                    f"{epoch}-{curr_step}-real/are_real",
-                    real_are_real_images,
-                    max_outputs=25,
-                    global_step=curr_step,
-                    # description="Real images that the discriminator says are real",
-                )
+            # with self.summary_writer.as_default():
+            self.summary_writer.add_scalar(
+                "losses/d_loss",
+                d_loss,
+                global_step=curr_step,
+                # description="Average of predicting real images as real and fake as fake",
+            )
+            self.summary_writer.add_scalar(
+                "losses/g_loss",
+                g_loss,
+                global_step=curr_step,
+                # description="Predicting fake images as real",
+            )
+            self.summary_writer.add_scalar(
+                "accuracy/real",
+                real_are_real,
+                global_step=curr_step,
+                # description="Real images classified as real",
+            )
+            self.summary_writer.add_scalar(
+                "accuracy/fake",
+                fake_are_fake,
+                global_step=curr_step,
+                # description="Fake images classified as fake",
+            )
+            # self.summary_writer.add_images(
+            #     f"{epoch}-{curr_step}-fake/are_fake",
+            #     fake_are_fake_images,
+            #     # max_outputs=25,
+            #     global_step=curr_step,
+            #     # description="Fake images that the discriminator says are fake",
+            # )
+            # self.summary_writer.add_images(
+            #     f"{epoch}-{curr_step}-fake/are_real",
+            #     fake_are_real_images,
+            #     # max_outputs=25,
+            #     global_step=curr_step,
+            #     # description="Fake images that the discriminator says are real",
+            # )
+            # self.summary_writer.add_images(
+            #     f"{epoch}-{curr_step}-real/are_fake",
+            #     real_are_fake_images,
+            #     # max_outputs=25,
+            #     global_step=curr_step,
+            #     # description="Real images that the discriminator says are fake",
+            # )
+            # self.summary_writer.add_images(
+            #     f"{epoch}-{curr_step}-real/are_real",
+            #     real_are_real_images,
+            #     # max_outputs=25,
+            #     global_step=curr_step,
+            #     # description="Real images that the discriminator says are real",
+            # )
 
             self.comet.log_metrics(
-                {"d_loss": d_loss, "g_loss": g_loss}, step=curr_step, epoch=epoch
+                {
+                    "d_loss": d_loss,
+                    "g_loss": g_loss,
+                    "accuracy/real": real_are_real,
+                    "accuracy/fake": fake_are_fake,
+                },
+                step=curr_step,
+                epoch=epoch,
             )
             fig = show_batch(fake_images, labels=disc_preds_to_label(d_fake_logits))
             self.comet.log_figure(

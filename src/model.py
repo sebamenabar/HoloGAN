@@ -83,10 +83,11 @@ class ObjectGenerator(nn.Module):
         for deconv in self.deconvs:
             nn.init.normal_(deconv.weight, std=0.02)
             nn.init.zeros_(deconv.bias)
-        nn.init.normal_(self.proj1.weight, std=0.02)
-        nn.init.zeros_(self.proj1.bias)
-        nn.init.normal_(self.proj2.weight, std=0.02)
-        nn.init.zeros_(self.proj2.bias)
+        if self.use_learnable_proj:
+            nn.init.normal_(self.proj1.weight, std=0.02)
+            nn.init.zeros_(self.proj1.bias)
+            nn.init.normal_(self.proj2.weight, std=0.02)
+            nn.init.zeros_(self.proj2.bias)
 
     def forward(self, z, view_in=None):
         z_dim = z.size(-1)
@@ -239,8 +240,12 @@ class Discriminator(nn.Module):
                     )
                 )
             )
-            # inst_norms.append(nn.InstanceNorm2d(f))
             prev_out_channels = f
+
+        for f in filters[:-1]:
+            inst_norms.append(nn.InstanceNorm2d(f))
+        # Avoids normalization with height=1, width=1
+        inst_norms.append(nn.Identity()) 
 
         self.convs = nn.ModuleList(convs)
         self.inst_norms = nn.ModuleList(inst_norms)
@@ -257,11 +262,11 @@ class Discriminator(nn.Module):
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, x):
-        for i, (conv,) in enumerate(zip(self.convs,)):
-        # for i, (conv, norm) in enumerate(zip(self.convs, self.inst_norms)):
+        # for i, (conv,) in enumerate(zip(self.convs,)):
+        for i, (conv, norm) in enumerate(zip(self.convs, self.inst_norms)):
             x = conv(x)
             # print(i, 'after conv', x.size(), x)
-            # x = norm(x)
+            x = norm(x)
             # print(i, 'after norm', x.size(), x)
             x = self.lrelu(x)
             # print(i, 'after lrelu', x.size(), x)

@@ -89,6 +89,8 @@ if __name__ == "__main__":
         cfg.gpu_id = args.gpu_id
     if cfg.gpu_id == '-1':
         cfg.cuda = False
+    else:
+        cfg.cuda = True
 
     manual_seed = (
         args.manual_seed
