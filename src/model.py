@@ -209,7 +209,7 @@ class Generator(nn.Module):
         h2_2d = composed_scene.view(bsz, 16 * 64, 16, 16)
         h = h2_2d
         # for deconv, inst_norm in zip(self.deconvs, self.inst_norms):
-        for deconv in zip(self.deconvs,):
+        for deconv, in zip(self.deconvs,):
             # h = self.lrelu(inst_norm(deconv(h)))
             h = self.lrelu(deconv(h))
 
@@ -257,10 +257,13 @@ class Discriminator(nn.Module):
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, x):
-        for conv in zip(self.convs,):
-            # for conv, norm in zip(self.convs, self.inst_norms):
+        for i, (conv,) in enumerate(zip(self.convs,)):
+        # for i, (conv, norm) in enumerate(zip(self.convs, self.inst_norms)):
             x = conv(x)
+            # print(i, 'after conv', x.size(), x)
             # x = norm(x)
+            # print(i, 'after norm', x.size(), x)
             x = self.lrelu(x)
+            # print(i, 'after lrelu', x.size(), x)
 
-        return self.linear(x.view(x.size(0), -1))
+        return self.linear(x.view(x.size(0), -1)).squeeze(1)
