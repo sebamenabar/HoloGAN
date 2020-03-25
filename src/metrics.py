@@ -6,9 +6,10 @@ from inception import InceptionV3
 DIMS = 2048
 
 
-def calculate_frechet_distance(real_images, fake_images):
-    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[DIMS]
-    model = InceptionV3([block_idx])
+def calculate_frechet_distance(real_images, fake_images, model=None):
+    if model is None:
+        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[DIMS]
+        model = InceptionV3([block_idx])
 
     real_pred = model(real_images)[0]
     fake_pred = model(fake_images)[0]

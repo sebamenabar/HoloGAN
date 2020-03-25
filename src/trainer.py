@@ -30,6 +30,8 @@ from data_utils import (
     split_images_on_disc,
     show_batch,
 )
+from inception import InceptionV3
+
 
 
 class Logger(object):
@@ -95,6 +97,9 @@ class Trainer:
         self.d_mid_getter = MidGetter(
             self.discriminator, return_layers=return_layers, keep_output=True
         )
+        print('Initiating InceptionNet')
+        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+        self.inception = InceptionV3([block_idx])
 
         print("Generator")
         print(self.generator)
@@ -121,7 +126,7 @@ class Trainer:
         self.comet.set_name(f"{cfg.experiment_name}/{cfg.run_name}")
         self.comet.log_parameters(flatten_json_iterative_solution(self.cfg))
         self.comet.log_parameter(
-            "CUDA_VISIBLE_DEVICES", os.environ["CUDA_VISIBLE_DEVICES"]
+            'CUDA_VISIBLE_DEVICES', getattr(os.environ, 'CUDA_VISIBLE_DEVICES', '-1')
         )
         self.comet.log_asset_data(json.dumps(self.cfg, indent=4), file_name="cfg.json")
         self.comet.set_model_graph(f"{self.generator}\n{self.discriminator}")
@@ -275,9 +280,9 @@ class Trainer:
                 bg_view = sample_view(
                     batch_size=bsz,
                     num_objects=1,
-                    azimuth_range=(-10, 10),
-                    elevation_range=(-5, 5),
-                    scale_range=(0.9, 1.1),
+                    azimuth_range=(-3, 3),
+                    elevation_range=(-3, 3),
+                    scale_range=(0.95, 1.05),
                 )
                 fg_view = sample_view(
                     batch_size=bsz,
@@ -403,6 +408,7 @@ class Trainer:
         print(f'EPOCH {epoch} FID: {fid:.3f}')
 
     def calculate_frechet_distance(self, epoch, it, num_samples=64):
+        num_samples = min(max(num_samples, 2), len(self.dataset))
         real_images = torch.stack(
             [self.dataset[i] for i in torch.randint(len(self.dataset), (num_samples,))]
         )
@@ -421,17 +427,18 @@ class Trainer:
         bg_view = sample_view(
             batch_size=num_samples,
             num_objects=1,
-            azimuth_range=(-10, 10),
-            elevation_range=(-5, 5),
-            scale_range=(0.9, 1.1),
+            azimuth_range=(-3, 3),
+            elevation_range=(-3, 3),
+            scale_range=(0.95, 1.05),
         )
         fg_view = sample_view(
             batch_size=num_samples,
             num_objects=z_fg.shape[1],
             **transform_curriculum(epoch - 5),
         )
-        fake_images = self.generator.cpu()(z_bg, z_fg, bg_view, fg_view)
-        fid = calculate_frechet_distance(real_images, fake_images)
+        with torch.no_grad():
+            fake_images = self.generator.cpu()(z_bg, z_fg, bg_view, fg_view)
+            fid = calculate_frechet_distance(real_images, fake_images, self.inception)
         if self.log:
             self.summary_writer.add_scalar('fid', fid, global_step=self.curr_step + it)
             self.comet.log_metrics(

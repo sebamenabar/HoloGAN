@@ -1,4 +1,4 @@
-run_name: 'with-transform&style'
+run_name: 'transform&style&curriculum'
 experiment_name: 'torch-fix'
 comet_project_name: 'torch-fix'
 cuda: True
