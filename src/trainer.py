@@ -33,7 +33,6 @@ from data_utils import (
 from inception import InceptionV3
 
 
-
 class Logger(object):
     def __init__(self, logfile):
         self.terminal = sys.stdout
@@ -97,7 +96,7 @@ class Trainer:
         self.d_mid_getter = MidGetter(
             self.discriminator, return_layers=return_layers, keep_output=True
         )
-        print('Initiating InceptionNet')
+        print("Initiating InceptionNet")
         block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
         self.inception = InceptionV3([block_idx])
 
@@ -126,7 +125,7 @@ class Trainer:
         self.comet.set_name(f"{cfg.experiment_name}/{cfg.run_name}")
         self.comet.log_parameters(flatten_json_iterative_solution(self.cfg))
         self.comet.log_parameter(
-            'CUDA_VISIBLE_DEVICES', getattr(os.environ, 'CUDA_VISIBLE_DEVICES', '-1')
+            "CUDA_VISIBLE_DEVICES", getattr(os.environ, "CUDA_VISIBLE_DEVICES", "-1")
         )
         self.comet.log_asset_data(json.dumps(self.cfg, indent=4), file_name="cfg.json")
         self.comet.set_model_graph(f"{self.generator}\n{self.discriminator}")
@@ -239,7 +238,7 @@ class Trainer:
     def train_epoch(self, epoch):
         if epoch == 0:
             fid = self.calculate_frechet_distance(epoch, 0)
-            print(f'RANDOM FID: {fid:.3f}')
+            print(f"EPOCH {epoch}: {fid:.3f}")
         train_iter = self.prepare_dataloader()
         pbar = tqdm(
             enumerate(train_iter),
@@ -406,7 +405,7 @@ class Trainer:
 
         del train_iter
         fid = self.calculate_frechet_distance(epoch, it)
-        print(f'EPOCH {epoch} FID: {fid:.3f}')
+        print(f"EPOCH {epoch} FID: {fid:.3f}")
 
     def calculate_frechet_distance(self, epoch, it, num_samples=64):
         num_samples = min(max(num_samples, 2), len(self.dataset))
@@ -438,16 +437,19 @@ class Trainer:
             **transform_curriculum(epoch - 5),
         )
         with torch.no_grad():
-            fake_images = self.generator.cpu()(z_bg, z_fg, bg_view, fg_view)
-            fid = calculate_frechet_distance(real_images, fake_images, self.inception)
+            fake_images = self.generator(
+                z_bg.to(self.device),
+                z_fg.to(self.device),
+                bg_view.to(self.device),
+                fg_view.to(self.device),
+            )
+            fid = calculate_frechet_distance(
+                real_images.numpy(), fake_images.cpu().numpy(), self.inception
+            )
         if self.log:
-            self.summary_writer.add_scalar('fid', fid, global_step=self.curr_step + it)
+            self.summary_writer.add_scalar("fid", fid, global_step=self.curr_step + it)
             self.comet.log_metrics(
-                {
-                    "fid": fid,
-                },
-                step=self.curr_step + it,
-                epoch=epoch,
+                {"fid": fid,}, step=self.curr_step + it, epoch=epoch,
             )
         return fid
 
