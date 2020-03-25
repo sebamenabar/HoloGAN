@@ -20,9 +20,10 @@ from tqdm.autonotebook import tqdm
 
 from torch_intermediate_layer_getter import IntermediateLayerGetter as MidGetter
 
+from metrics import calculate_frechet_distance
 from sampling_utils import sample_z, sample_view
 from model import Generator, Discriminator
-from misc_utils import mkdir_p, flatten_json_iterative_solution
+from misc_utils import mkdir_p, flatten_json_iterative_solution, transform_curriculum
 from data_utils import (
     ImageFilelist,
     disc_preds_to_label,
@@ -130,6 +131,7 @@ class Trainer:
 
         # self.start_epoch = tf.Variable(0)
         self.curr_step = 0
+        self.epoch = 0
         # self.ckpt = tf.train.Checkpoint(
         #     generator=self.generator,
         #     discriminator=self.discriminator,
@@ -230,6 +232,9 @@ class Trainer:
         return d_fake_logits, d_real_logits, generated
 
     def train_epoch(self, epoch):
+        if epoch == 0:
+            fid = self.calculate_frechet_distance(epoch, 0)
+            print(f'RANDOM FID: {fid:.3f}')
         train_iter = self.prepare_dataloader()
         pbar = tqdm(
             enumerate(train_iter),
@@ -266,21 +271,19 @@ class Trainer:
                     bsz,
                     self.generator.z_dim_fg,
                     num_objects=torch.randint(3, 11, (1,)).item(),
-                    # num_objects=(
-                    #     3,
-                    #     min(
-                    #         10, 3 + 1 * (epoch // self.cfg.train.obj_num_increase_epoch)
-                    #     ),
-                    # ),
                 )
                 bg_view = sample_view(
                     batch_size=bsz,
                     num_objects=1,
-                    azimuth_range=(-20, 20),
-                    elevation_range=(-10, 10),
+                    azimuth_range=(-10, 10),
+                    elevation_range=(-5, 5),
                     scale_range=(0.9, 1.1),
                 )
-                fg_view = sample_view(batch_size=bsz, num_objects=z_fg.shape[1],)
+                fg_view = sample_view(
+                    batch_size=bsz,
+                    num_objects=z_fg.shape[1],
+                    **transform_curriculum(epoch - 5),
+                )
 
             image_batch = image_batch.to(self.device)
             z_bg = z_bg.to(self.device)
@@ -290,7 +293,6 @@ class Trainer:
 
             generated = self.generator(z_bg, z_fg, bg_view, fg_view)
             d_fake_style_logits, d_fake_logits = self.d_mid_getter(generated.detach())
-            # image_batch = (image_batch * 2) - 1
             if self.cfg.train.discriminator.random_noise or self.curr_step <= 10000:
                 image_batch = image_batch + torch.normal(
                     0, 0.1, image_batch.size(), device=self.device
@@ -361,7 +363,7 @@ class Trainer:
                     pad_voxel = self.generator.gen_voxel_only(
                         z_bg, z_fg_padded, bg_view, view_fg_padded
                     )
-                    l1 = (voxel - pad_voxel).sum().abs().item()
+                    l1 = (voxel - pad_voxel).abs().mean().item()
 
                     del (
                         z_fg_pad,
@@ -397,6 +399,49 @@ class Trainer:
             gc.collect()
 
         del train_iter
+        fid = self.calculate_frechet_distance(epoch, it)
+        print(f'EPOCH {epoch} FID: {fid:.3f}')
+
+    def calculate_frechet_distance(self, epoch, it, num_samples=64):
+        real_images = torch.stack(
+            [self.dataset[i] for i in torch.randint(len(self.dataset), (num_samples,))]
+        )
+        z_bg = sample_z(num_samples, self.generator.z_dim_bg, num_objects=1)
+        z_fg = sample_z(
+            num_samples,
+            self.generator.z_dim_fg,
+            num_objects=torch.randint(3, 11, (1,)).item(),
+            # num_objects=(
+            #     3,
+            #     min(
+            #         10, 3 + 1 * (epoch // self.cfg.train.obj_num_increase_epoch)
+            #     ),
+            # ),
+        )
+        bg_view = sample_view(
+            batch_size=num_samples,
+            num_objects=1,
+            azimuth_range=(-10, 10),
+            elevation_range=(-5, 5),
+            scale_range=(0.9, 1.1),
+        )
+        fg_view = sample_view(
+            batch_size=num_samples,
+            num_objects=z_fg.shape[1],
+            **transform_curriculum(epoch - 5),
+        )
+        fake_images = self.generator.cpu()(z_bg, z_fg, bg_view, fg_view)
+        fid = calculate_frechet_distance(real_images, fake_images)
+        if self.log:
+            self.summary_writer.add_scalar('fid', fid, global_step=self.curr_step + it)
+            self.comet.log_metrics(
+                {
+                    "fid": fid,
+                },
+                step=self.curr_step + it,
+                epoch=epoch,
+            )
+        return fid
 
     def log_training(
         self,
@@ -509,6 +554,7 @@ class Trainer:
     def train(self):
         print("Start training")
         for epoch in range(0, self.cfg.train.epochs):
+            self.epoch = epoch
             with self.comet.train():
                 self.train_epoch(epoch)
             self.curr_step += self.steps_per_epoch
