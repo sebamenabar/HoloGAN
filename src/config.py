@@ -18,7 +18,8 @@ __C.run_name = ""
 __C.comet_project_name = ""
 __C.logcomet = False
 __C.cuda = False
-__C.gpu_id = '-1',
+__C.gpu_id = '-1'
+__C.num_workers = 0
 
 __C.train = edict(
     data_dir="",
@@ -28,7 +29,7 @@ __C.train = edict(
     snapshot_interval=5,
     image_height=64,
     image_width=64,
-    it_log_interval=100,
+    it_log_interval=200,
     obj_num_increase_epoch=5,
     generator=edict(
         optimizer=edict(lr=0.0001, betas=(0.5, 0.999)),
@@ -47,13 +48,16 @@ __C.model = edict(
         z_dim_fg=90,
         w_dim_bg=256,
         w_dim_fg=512,
-        filters=[64, 64, 64],
-        ks=[1, 4, 4],
-        strides=[1, 2, 2],
+        filters=[64, 64],
+        ks=[4, 4],
+        strides=[2, 2],
         use_learnable_proj=True
     ),
     discriminator=edict(
-        filters=[64, 128, 256, 512], ks=[5, 5, 5, 5], strides=[2, 2, 2, 2],
+        filters=[64, 128, 256, 512],
+        ks=[5, 5, 5, 5],
+        strides=[2, 2, 2, 2],
+        style_discriminator=False,
     ),
 )
 

@@ -1,18 +1,19 @@
-run_name: 'torch-wT-run2-obj-inc-5'
-experiment_name: 'object_t'
-comet_project_name: 'train-gan'
+run_name: 'with-transform'
+experiment_name: 'torch-fix'
+comet_project_name: 'torch-fix'
 cuda: True
 gpu_id: '0'
+num_workers: 4
 
 train:
   data_dir: '/mnt/ialabnas/datasets/CLEVR_v1.0/images/train'
   batch_size: 64
-  epochs: 50
+  epochs: 100
   snapshot_interval: 5
   image_height: 64
   image_width: 64
-  it_log_interval: 500
-  obj_num_increase_epoch: 5
+  it_log_interval: 200
+  obj_num_increase_epoch: 1
   generator:
     optimizer:
       lr: 0.0001
@@ -31,9 +32,9 @@ model:
     z_dim_fg: 128
     w_dim_bg: 256
     w_dim_fg: 512
-    filters: [64, 64, 64]
-    ks: [1, 4, 4]
-    strides: [1, 2, 2]
+    filters: [64, 64]
+    ks: [4, 4]
+    strides: [2, 2]
     use_learnable_proj: False
   discriminator:
     filters: [64, 128, 256, 512]

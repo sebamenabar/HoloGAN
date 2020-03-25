@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from layers import AdaIN
+from layers import AdaIN, AdaIN2D
 from transformation_utils import (
     generate_inv_transform_matrix,
     transform_voxel_to_match_image,
@@ -61,20 +61,21 @@ class ObjectGenerator(nn.Module):
         self.adains = nn.ModuleList(adains)
 
         if use_learnable_proj:
-            self.proj1 = nn.ConvTranspose3d(
-                in_channels=upconv_filters[-1],
-                out_channels=upconv_filters[-1],
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
-            self.proj2 = nn.ConvTranspose3d(
-                in_channels=upconv_filters[-1],
-                out_channels=upconv_filters[-1],
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
+            # self.proj1 = nn.ConvTranspose3d(
+            #     in_channels=upconv_filters[-1],
+            #     out_channels=upconv_filters[-1],
+            #     kernel_size=3,
+            #     stride=1,
+            #     padding=1,
+            # )
+            # self.proj2 = nn.ConvTranspose3d(
+            #     in_channels=upconv_filters[-1],
+            #     out_channels=upconv_filters[-1],
+            #     kernel_size=3,
+            #     stride=1,
+            #     padding=1,
+            # )
+            pass
         else:
             print("USING 3D TRANSFORM FOR OBJECT PROJECTION")
         self.init_params()
@@ -84,10 +85,11 @@ class ObjectGenerator(nn.Module):
             nn.init.normal_(deconv.weight, std=0.02)
             nn.init.zeros_(deconv.bias)
         if self.use_learnable_proj:
-            nn.init.normal_(self.proj1.weight, std=0.02)
-            nn.init.zeros_(self.proj1.bias)
-            nn.init.normal_(self.proj2.weight, std=0.02)
-            nn.init.zeros_(self.proj2.bias)
+            # nn.init.normal_(self.proj1.weight, std=0.02)
+            # nn.init.zeros_(self.proj1.bias)
+            # nn.init.normal_(self.proj2.weight, std=0.02)
+            # nn.init.zeros_(self.proj2.bias)
+            pass
 
     def forward(self, z, view_in=None):
         z_dim = z.size(-1)
@@ -114,13 +116,14 @@ class ObjectGenerator(nn.Module):
             h = self.lrelu(h)
 
         if self.use_learnable_proj:
-            h2_proj1 = self.proj1(h)
-            h2_proj1 = self.lrelu(h2_proj1)
+            # h2_proj1 = self.proj1(h)
+            # h2_proj1 = self.lrelu(h2_proj1)
 
-            h2_proj2 = self.proj2(h2_proj1)
-            h2_proj2 = self.lrelu(h2_proj2)
+            # h2_proj2 = self.proj2(h2_proj1)
+            # h2_proj2 = self.lrelu(h2_proj2)
+            h = transform_voxel_to_match_image(h)
 
-            out = h2_proj2
+            out = h
         else:
             A = generate_inv_transform_matrix(view_in)
             A = A[:, :3]
@@ -140,11 +143,11 @@ class Generator(nn.Module):
         z_dim_fg=90,
         w_dim_bg=256,
         w_dim_fg=512,
-        filters=[64, 64, 64],
-        ks=[1, 4, 4],
-        strides=[1, 2, 2],
-        upconv_paddings=[0, 1, 1],
-        upconv_out_paddings=[0, 0, 0],
+        filters=[64, 64],
+        ks=[4, 4],
+        strides=[2, 2],
+        upconv_paddings=[1, 1],
+        upconv_out_paddings=[0, 0],
         use_learnable_proj=True,
     ):
         super().__init__()
@@ -156,9 +159,14 @@ class Generator(nn.Module):
         self.bg_generator = ObjectGenerator(z_dim_bg, w_dim_bg, use_learnable_proj)
         self.fg_generator = ObjectGenerator(z_dim_fg, w_dim_fg, use_learnable_proj)
 
+        self.proj_conv = nn.Conv2d(
+            in_channels=1024,
+            out_channels=256,
+            kernel_size=1,
+        )
         deconvs = []
         inst_norms = []
-        prev_out_channels = 1024
+        prev_out_channels = 256
         for f, k, s, p, op in zip(
             filters, ks, strides, upconv_paddings, upconv_out_paddings
         ):
@@ -172,7 +180,8 @@ class Generator(nn.Module):
                     output_padding=op,
                 )
             )
-            # inst_norms.append(nn.InstanceNorm2d(num_features=f))
+            # inst_norms.append(nn.InstanceNorm2d(num_features=f, affine=False))
+            inst_norms.append(AdaIN2D(num_channels=f, z_dim=z_dim_bg))
             prev_out_channels = f
 
         self.deconvs = nn.ModuleList(deconvs)
@@ -187,15 +196,31 @@ class Generator(nn.Module):
             padding=2,
             # output_padding=1,
         )
+        self.init_params()
 
     def init_params(self):
         for deconv in self.deconvs:
             nn.init.normal_(deconv.weight, std=0.02)
             nn.init.zeros_(deconv.bias)
+        # for inst_norm in self.inst_norms:
+        #     nn.init.normal_(inst_norm.weight, mean=1, std=0.02)
+        #     nn.init.zeros_(inst_norm.bias)
         nn.init.normal_(self.out_conv.weight, std=0.02)
         nn.init.zeros_(self.out_conv.bias)
 
-    def forward(self, z_bg, z_fg, view_in_bg=None, view_in_fg=None):
+    def gen_voxel_only(self, z_bg, z_fg, view_in_bg=None, view_in_fg=None):
+        bg = self.bg_generator(
+            z_bg, view_in_bg,
+        )  # (bsz, 1, height, width, depth, num_channels)
+        fg = self.fg_generator(
+            z_fg, view_in_fg,
+        )  # (bsz, num_objects, height, width, depth, num_channels)
+        composed_scene = torch.cat((bg, fg), axis=1)
+        composed_scene = torch.max(composed_scene, dim=1)[0]
+
+        return composed_scene
+
+    def forward(self, z_bg, z_fg, view_in_bg=None, view_in_fg=None, return_voxel=False):
         bsz = z_bg.size(0)
 
         bg = self.bg_generator(
@@ -209,19 +234,30 @@ class Generator(nn.Module):
 
         h2_2d = composed_scene.view(bsz, 16 * 64, 16, 16)
         h = h2_2d
-        # for deconv, inst_norm in zip(self.deconvs, self.inst_norms):
-        for deconv, in zip(self.deconvs,):
-            # h = self.lrelu(inst_norm(deconv(h)))
-            h = self.lrelu(deconv(h))
+        h = self.proj_conv(h)
+        h = self.lrelu(h)
+        # for deconv, in zip(self.deconvs,):
+        if len(z_bg.size()) == 3:
+            z_bg = z_bg.squeeze(1)
+        for deconv, inst_norm in zip(self.deconvs, self.inst_norms):
+            h = deconv(h)
+            h = inst_norm(h, z_bg)
+            h = self.lrelu(h)
 
-        h = torch.tanh(self.out_conv(h))
+        h = torch.sigmoid(self.out_conv(h))
 
+        if return_voxel:
+            return h, composed_scene
         return h
 
 
 class Discriminator(nn.Module):
     def __init__(
-        self, filters=[64, 128, 256, 512], ks=[5, 5, 5, 5], strides=[2, 2, 2, 2],
+        self,
+        style_discriminator=False,
+        filters=[64, 128, 256, 512],
+        ks=[5, 5, 5, 5],
+        strides=[2, 2, 2, 2],
     ):
         super().__init__()
 
@@ -237,38 +273,59 @@ class Discriminator(nn.Module):
                         out_channels=f,
                         kernel_size=k,
                         stride=s,
+                        padding=2,
                     )
                 )
             )
             prev_out_channels = f
 
-        for f in filters[:-1]:
-            inst_norms.append(nn.InstanceNorm2d(f))
+        for f in filters:
+            inst_norms.append(nn.InstanceNorm2d(f, affine=True))
         # Avoids normalization with height=1, width=1
-        inst_norms.append(nn.Identity()) 
+        # inst_norms.append(nn.Identity())
 
         self.convs = nn.ModuleList(convs)
         self.inst_norms = nn.ModuleList(inst_norms)
         self.linear = nn.utils.spectral_norm(
-            nn.Linear(in_features=prev_out_channels, out_features=1)
+            nn.Linear(in_features=prev_out_channels * 4 * 4, out_features=1)
         )
+
+        self.style_discriminator = style_discriminator
+        if self.style_discriminator:
+            print('USING STYLE DISCRIMINATOR')
+            style_classifiers = []
+            for f in filters:
+                style_classifiers.append(
+                    nn.utils.spectral_norm(nn.Linear(
+                        in_features=2 * f,
+                        out_features=1,
+                    ))
+                )
+            self.style_classifiers = nn.ModuleList(style_classifiers)
+
         self.init_params()
 
     def init_params(self):
         for conv in self.convs:
             nn.init.normal_(conv.weight, std=0.02)
             nn.init.zeros_(conv.bias)
+        for inst_norm in self.inst_norms:
+            nn.init.normal_(inst_norm.weight, mean=1, std=0.02)
+            nn.init.zeros_(inst_norm.bias)
         nn.init.normal_(self.linear.weight, std=0.02)
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, x):
-        # for i, (conv,) in enumerate(zip(self.convs,)):
+        x = (x * 2) - 1
         for i, (conv, norm) in enumerate(zip(self.convs, self.inst_norms)):
             x = conv(x)
-            # print(i, 'after conv', x.size(), x)
             x = norm(x)
-            # print(i, 'after norm', x.size(), x)
+
+            if self.style_discriminator:
+                var, mean = torch.var_mean(x, dim=(2, 3))
+                style = torch.cat((var, mean), 1)
+                self.style_classifiers[i](style)
+
             x = self.lrelu(x)
-            # print(i, 'after lrelu', x.size(), x)
 
         return self.linear(x.view(x.size(0), -1)).squeeze(1)
