@@ -119,6 +119,9 @@ class Trainer:
         )
         self.comet.set_name(f"{cfg.experiment_name}/{cfg.run_name}")
         self.comet.log_parameters(flatten_json_iterative_solution(self.cfg))
+        self.comet.log_parameter(
+            "CUDA_VISIBLE_DEVICES", os.environ["CUDA_VISIBLE_DEVICES"]
+        )
         self.comet.log_asset_data(json.dumps(self.cfg, indent=4), file_name="cfg.json")
         self.comet.set_model_graph(f"{self.generator}\n{self.discriminator}")
         if cfg.cfg_file:
@@ -243,7 +246,7 @@ class Trainer:
         real_samples_counter = 0
         fake_are_fake_samples_counter = 0
         fake_samples_counter = 0
-        l1 = 0.
+        l1 = 0.0
 
         z_bg = z_fg = None
         self.generator.train(True)
@@ -358,7 +361,16 @@ class Trainer:
                     pad_voxel = self.generator.gen_voxel_only(
                         z_bg, z_fg_padded, bg_view, view_fg_padded
                     )
-                    l1 = (voxel - pad_voxel).sum().item()
+                    l1 = (voxel - pad_voxel).sum().abs().item()
+
+                    del (
+                        z_fg_pad,
+                        z_fg_padded,
+                        view_fg_pad,
+                        view_fg_padded,
+                        voxel,
+                        pad_voxel,
+                    )
 
                 self.log_training(
                     d_loss=total_d_loss / counter,
@@ -478,7 +490,7 @@ class Trainer:
                     "g_loss": g_loss,
                     "accuracy/real": real_are_real,
                     "accuracy/fake": fake_are_fake,
-                    'l1_padded_voxel': l1,
+                    "l1_padded_voxel": l1,
                 },
                 step=curr_step,
                 epoch=epoch,

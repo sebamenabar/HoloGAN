@@ -61,20 +61,20 @@ class ObjectGenerator(nn.Module):
         self.adains = nn.ModuleList(adains)
 
         if use_learnable_proj:
-            # self.proj1 = nn.ConvTranspose3d(
-            #     in_channels=upconv_filters[-1],
-            #     out_channels=upconv_filters[-1],
-            #     kernel_size=3,
-            #     stride=1,
-            #     padding=1,
-            # )
-            # self.proj2 = nn.ConvTranspose3d(
-            #     in_channels=upconv_filters[-1],
-            #     out_channels=upconv_filters[-1],
-            #     kernel_size=3,
-            #     stride=1,
-            #     padding=1,
-            # )
+            self.proj1 = nn.ConvTranspose3d(
+                in_channels=upconv_filters[-1],
+                out_channels=upconv_filters[-1],
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            )
+            self.proj2 = nn.ConvTranspose3d(
+                in_channels=upconv_filters[-1],
+                out_channels=upconv_filters[-1],
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            )
             pass
         else:
             print("USING 3D TRANSFORM FOR OBJECT PROJECTION")
@@ -85,10 +85,10 @@ class ObjectGenerator(nn.Module):
             nn.init.normal_(deconv.weight, std=0.02)
             nn.init.zeros_(deconv.bias)
         if self.use_learnable_proj:
-            # nn.init.normal_(self.proj1.weight, std=0.02)
-            # nn.init.zeros_(self.proj1.bias)
-            # nn.init.normal_(self.proj2.weight, std=0.02)
-            # nn.init.zeros_(self.proj2.bias)
+            nn.init.normal_(self.proj1.weight, std=0.02)
+            nn.init.zeros_(self.proj1.bias)
+            nn.init.normal_(self.proj2.weight, std=0.02)
+            nn.init.zeros_(self.proj2.bias)
             pass
 
     def forward(self, z, view_in=None):
@@ -116,11 +116,11 @@ class ObjectGenerator(nn.Module):
             h = self.lrelu(h)
 
         if self.use_learnable_proj:
-            # h2_proj1 = self.proj1(h)
-            # h2_proj1 = self.lrelu(h2_proj1)
+            h = self.proj1(h)
+            h = self.lrelu(h)
 
-            # h2_proj2 = self.proj2(h2_proj1)
-            # h2_proj2 = self.lrelu(h2_proj2)
+            h = self.proj2(h)
+            h = self.lrelu(h)
             h = transform_voxel_to_match_image(h)
 
             out = h
