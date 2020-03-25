@@ -297,9 +297,14 @@ class Trainer:
 
             generated = self.generator(z_bg, z_fg, bg_view, fg_view)
             d_fake_style_logits, d_fake_logits = self.d_mid_getter(generated.detach())
+<<<<<<< HEAD
+            # image_batch = (image_batch * 2) - 1
+            if self.cfg.train.discriminator.random_noise or (self.curr_step <= 10000):
+=======
             if self.cfg.train.discriminator.random_noise or self.curr_step <= 10000:
+>>>>>>> 8ca03edc84474a53807d7f82d866e3572734ef03
                 image_batch = image_batch + torch.normal(
-                    0, 0.1, image_batch.size(), device=self.device
+                    0, 0.02, image_batch.size(), device=self.device
                 )
             d_real_style_logits, d_real_logits = self.d_mid_getter(image_batch)
 
