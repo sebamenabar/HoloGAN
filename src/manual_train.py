@@ -2,16 +2,19 @@ import os
 import os.path as osp
 import argparse
 import math
+import shutil
+
 
 import torch
-from torch.nn import optim
+import torch.nn as nn
+from torch import optim
 from torch.nn.functional import binary_cross_entropy_with_logits as bce, l1_loss
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
 import torchnet.meter as meter
 
 
-import tqdm.autonotebook as tqdm
+from tqdm import tqdm
 from torch_intermediate_layer_getter import IntermediateLayerGetter as MidGetter
 
 from config import cfg, cfg_from_file
@@ -21,11 +24,19 @@ from misc_utils import mkdir_p
 from sampling_utils import sample_view, sample_z
 
 
+class MyDataParallel(nn.DataParallel):
+    def __getattr__(self, name):
+        try:
+            return super(MyDataParallel, self).__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
+
+
 def build_dataset(data_dir):
     return ImageFilelist(data_dir, "*.png")
 
 
-def build_dataloader(dataset, batch_size=64, num_workers=0, pin_memory=False):
+def build_dataloader(dataset, batch_size=32, num_workers=8, pin_memory=False):
     return (
         torch.utils.data.DataLoader(
             dataset,
@@ -45,34 +56,28 @@ def set_logdir(experiment_name, run_name):
     mkdir_p(ckpt_dir)
     print("Saving output to: {}".format(logdir))
     writer = SummaryWriter(logdir)
+    code_dir = os.path.join(os.getcwd(), "src")
+    mkdir_p(os.path.join(logdir, "src"))
+    for filename in os.listdir(code_dir):
+        if filename.endswith(".py"):
+            shutil.copy(code_dir + "/" + filename, os.path.join(logdir, "src"))
+    shutil.copy(args.cfg_file, logdir)
     return writer, logdir, ckpt_dir
 
 
 def build_models(gen_cfg, disc_cfg):
     generator = Generator(**gen_cfg)
     discriminator = Discriminator(**disc_cfg)
-    if discriminator.style_discriminator:
-        return_layers = {
-            "style_classifiers.0": "style0",
-            "style_classifiers.1": "style1",
-            "style_classifiers.2": "style2",
-            "style_classifiers.3": "style3",
-        }
-    else:
-        return_layers = {}
-    wrapped_disc = MidGetter(
-        discriminator, return_layers=return_layers, keep_output=True
-    )
-
-    return generator, wrapped_disc
+    return generator, discriminator
 
 
 def style_loss(logits_list, target="ones"):
     loss = 0.0
+    logit = list(logits_list)[0]
     if target == "ones":
-        target = torch.ones_like(logits_list[0])
+        target = torch.ones_like(logit)
     elif target == "zeros":
-        target = torch.zeros_like(logits_list[0])
+        target = torch.zeros_like(logit)
     for logit in logits_list:
         loss = loss + bce(logit, target)
     return loss
@@ -110,11 +115,12 @@ def calculate_voxel_l1_loss(generator, voxel, grad_enabled=True):
         # voxel = self.generator.gen_voxel_only(z_bg, z_fg, bg_view, fg_view)
         padded_voxel = generator.fg_generator(z_fg_pad, view_fg_pad)
         padded_voxel = torch.max(torch.cat((voxel.unsqueeze(1), padded_voxel), 1), 1)[0]
-        loss = l1_loss(padded_voxel)
+        loss = l1_loss(padded_voxel, voxel)
     return loss
 
 
 def train_epoch(
+    cfg,
     epoch,
     dataset,
     g,
@@ -128,7 +134,9 @@ def train_epoch(
 ):
     if device is None:
         device = g.device
-    loader, steps_per_epoch = build_dataloader(dataset, batch_size=64, pin_memory=True)
+    loader, steps_per_epoch = build_dataloader(
+        dataset, batch_size=cfg.train.batch_size, pin_memory=True
+    )
     pbar = tqdm(
         enumerate(loader),
         total=steps_per_epoch,
@@ -142,7 +150,7 @@ def train_epoch(
         "fakemAP": meter.AverageValueMeter(),
         "d_loss": meter.AverageValueMeter(),
         "g_loss": meter.AverageValueMeter(),
-        "l1_loss": meter.AverageValueMeter(),
+        # "l1_loss": meter.AverageValueMeter(),
     }
 
     z_dim_fg = g.z_dim_fg
@@ -170,12 +178,12 @@ def train_epoch(
         bg_view = bg_view.to(device)
         fg_view = fg_view.to(device)
 
-        fake_images, voxel = g(z_bg, z_fg, bg_view, fg_view, return_voxel=True)
-        voxel = voxel.detach()
-        l1_loss = calculate_voxel_l1_loss(g, voxel, grad_enable=True)
-        if l1_loss.requires_grad:
-            l1_loss.backward() * 1e-3
-        l1_loss = l1_loss.item()  # to free memory (?)
+        fake_images, _ = g(z_bg, z_fg, bg_view, fg_view, return_voxel=True)
+        # voxel = voxel.detach()
+        # l1_loss = calculate_voxel_l1_loss(g, voxel, grad_enabled=True)
+        # if l1_loss.requires_grad:
+        #     (l1_loss * 1e-3).backward()
+        # l1_loss = l1_loss.item()  # to free memory (?)
 
         if disc_noise:
             real_images = real_images + torch.normal(
@@ -185,10 +193,7 @@ def train_epoch(
         d_real_style_logits, d_real_logits = d(real_images)
         d_fake_style_logits, d_fake_logits = d(fake_images.detach())
         d_loss = discriminator_loss(
-            d_real_logits,
-            d_fake_logits,
-            d_real_style_logits.values(),
-            d_fake_style_logits.values(),
+            d_real_logits, d_fake_logits, d_real_style_logits, d_fake_style_logits,
         )
         d_loss.backward()
         d_optimizer.step()
@@ -196,7 +201,7 @@ def train_epoch(
         d_loss = d_loss.item()
 
         d_fake_style_logits, d_fake_logits = d(fake_images)
-        g_loss = generator_loss(d_fake_logits, d_fake_style_logits.values())
+        g_loss = generator_loss(d_fake_logits, d_fake_style_logits)
         # self.generator.zero_grad()
         g_loss.backward()
         g_optimizer.step()
@@ -205,23 +210,24 @@ def train_epoch(
 
         meters["d_loss"].add(d_loss)
         meters["g_loss"].add(g_loss)
-        meters["l1_loss"].add(l1_loss)
+        # meters["l1_loss"].add(l1_loss)
         real_acc = (d_real_logits >= 0).cpu().numpy().sum() / bsz
         fake_acc = (d_fake_logits < 0).cpu().numpy().sum() / bsz
         meters["realmAP"].add(real_acc)
         meters["fakemAP"].add(fake_acc)
 
         pbar.set_postfix(
-            g_l=f"{g_loss:.1f}({meters['g_loss'].value():.1f})",
-            d_l=f"{d_loss:.2f}({meters['d_loss'].value():.2f})",
-            l1_l=f"{l1_loss:.2f}({meters['l1_loss'].value():.2f})",
-            rrr=f"{real_acc:.2f}({meters['realmAP'].value():.2f})",
-            frf=f"{fake_acc:.2f}({meters['fakemAP'].value():.2f})",
+            g_l=f"{g_loss:.1f}({meters['g_loss'].mean:.1f})",
+            d_l=f"{d_loss:.2f}({meters['d_loss'].mean:.2f})",
+            # l1_l=f"{l1_loss:.2f}({meters['l1_loss'].mean:.2f})",
+            rrr=f"{real_acc:.2f}({meters['realmAP'].mean:.2f})",
+            frf=f"{fake_acc:.2f}({meters['fakemAP'].mean:.2f})",
             refresh=False,
         )
 
         if (it % 200) == 0:
             log_training(
+                writer,
                 meters=meters,
                 fake_images=fake_images,
                 real_images=real_images,
@@ -245,6 +251,8 @@ def log_training(
     epoch,
     curr_step,
 ):
+    if writer is None:
+        return
     real_are_real_images, real_are_fake_images = split_images_on_disc(
         real_images, real_logits,
     )
@@ -253,31 +261,31 @@ def log_training(
     )
     writer.add_scalar(
         "losses/d_loss",
-        meters["d_loss"].value(),
+        meters["d_loss"].mean,
         global_step=curr_step,
         # description="Average of predicting real images as real and fake as fake",
     )
     writer.add_scalar(
         "losses/g_loss",
-        meters["g_loss"].value(),
+        meters["g_loss"].mean,
         global_step=curr_step,
         # description="Predicting fake images as real",
     )
-    writer.add_scalar(
-        "l1_padded_voxel",
-        meters["l1_loss"].value(),
-        global_step=curr_step,
-        # description="Predicting fake images as real",
-    )
+    # writer.add_scalar(
+    #     "losses/l1_padded_voxel",
+    #     meters["l1_loss"].mean,
+    #     global_step=curr_step,
+    #     # description="Predicting fake images as real",
+    # )
     writer.add_scalar(
         "accuracy/real",
-        meters["realmAP"].value(),
+        meters["realmAP"].mean,
         global_step=curr_step,
         # description="Real images classified as real",
     )
     writer.add_scalar(
         "accuracy/fake",
-        meters["fakemAP"].value(),
+        meters["fakemAP"].mean,
         global_step=curr_step,
         # description="Fake images classified as fake",
     )
@@ -326,7 +334,7 @@ def parse_args():
     parser.add_argument("--gpu-id", dest="gpu_id", default="0")
     # parser.add_argument("--logdir", type=str, default='manual_training')
 
-    parser.add_argument("--disc-noise", type=bool, default=False)
+    parser.add_argument("--disc-noise", action="store_true")
     parser.add_argument("--run-name", type=str, required=True)
     parser.add_argument("--experiment-name", type=str, required=True)
 
@@ -347,36 +355,63 @@ def resume_training(ckpt_fp, generator, discriminator, g_optimizer, d_optimizer)
     return ckpt["train_info"]
 
 
-FOREGROUND_VIEW_RANGE = dict(
+def wrap_disc(disc):
+    if disc.style_discriminator:
+        return_layers = {
+            "style_classifiers.0": "style0",
+            "style_classifiers.1": "style1",
+            "style_classifiers.2": "style2",
+            "style_classifiers.3": "style3",
+        }
+    else:
+        return_layers = {}
+    wrapped_disc = MidGetter(disc, return_layers=return_layers, keep_output=True)
+    return wrapped_disc
+
+
+BACKGROUND_VIEW_RANGE = dict(
     azimuth_range=(-10, 10), elevation_range=(-5, 5), scale_range=(0.9, 1.1),
 )
-BACKGROUND_VIEW_RANGE = {
-    "azimuth_range": (-5, 5),
-    "scale_range": (0.9, 1.1),
-    "tx_range": (-0.5, 0.5),
-    "tz_range": (-0.5, 0.5),
+FOREGROUND_VIEW_RANGE = {
+    "azimuth_range": (-30, 30),
+    "scale_range": (0.8, 1.2),
+    "tx_range": (-2, 2),
+    "tz_range": (-2, 2),
 }
 
 if __name__ == "__main__":
     args = parse_args()
     device = torch.device("cuda")
-    dataset = build_dataset()
+    dataset = build_dataset(args.data_dir or cfg.train.data_dir)
     writer, logdir, ckpt_dir = set_logdir(args.experiment_name, args.run_name)
 
-    generator, wrapped_disc = build_models(cfg.model.generator, cfg.model.discriminator)
+    generator, discriminator = build_models(
+        cfg.model.generator, cfg.model.discriminator
+    )
+    multi_gpu = False
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        generator = MyDataParallel(generator)
+        discriminator = MyDataParallel(discriminator)
+        multi_gpu = True
     generator = generator.to(device)
-    wrapped_disc = wrapped_disc.to(device)
+    discriminator = discriminator.to(device)
+
+    # wrapped_disc = wrap_disc(discriminator)
 
     g_optimizer = optim.Adam(generator.parameters(), **cfg.train.generator.optimizer)
     d_optimizer = optim.Adam(
-        wrapped_disc._model.parameters(), **cfg.train.discriminator.optimizer
+        discriminator.parameters(), **cfg.train.discriminator.optimizer
     )
 
     if args.resume:
         train_info = resume_training(
-            args.resume, generator, wrapped_disc._model, g_optimizer, d_optimizer,
+            args.resume, generator, discriminator, g_optimizer, d_optimizer,
         )
-        train_info["start_epoch"] = train_info["epoch"] + 1
+        train_info["start_epoch"] = train_info["curr_epoch"] + 1
+
+        print("RESUMING FROM", args.resume)
+        print(train_info)
     else:
         train_info = {
             "curr_epoch": 0,
@@ -388,16 +423,19 @@ if __name__ == "__main__":
 
     print("TRAINING WITH")
     print(train_info)
+    print(cfg)
+    print(args)
 
     for epoch in range(
         train_info["start_epoch"], train_info["start_epoch"] + args.epochs
     ):
         train_info["curr_epoch"] = epoch
         steps = train_epoch(
+            cfg,
             epoch,
             dataset,
             generator,
-            wrapped_disc,
+            discriminator,
             g_optimizer,
             d_optimizer,
             train_info,
@@ -406,10 +444,25 @@ if __name__ == "__main__":
             writer,
         )
         train_info["curr_step"] += steps
-        torch.save({
-            'g': generator.state_dict(),
-            'd': wrapped_disc._model.state_dict(),
-            'g_opt': g_optimizer.state_dict(),
-            'd_opt': d_optimizer.state_dict(),
-            'train_info': train_info
-        }, osp.join(ckpt_dir, "epoch-{epoch}.pth"))
+        if multi_gpu:
+            torch.save(
+                {
+                    "g_state_dict": generator.module.state_dict(),
+                    "d_state_dict": discriminator.module.state_dict(),
+                    "g_opt_state_dict": g_optimizer.state_dict(),
+                    "d_opt_state_dict": d_optimizer.state_dict(),
+                    "train_info": train_info,
+                },
+                osp.join(ckpt_dir, f"epoch-{epoch}.pth"),
+            )
+        else:
+            torch.save(
+                {
+                    "g_state_dict": generator.state_dict(),
+                    "d_state_dict": discriminator.state_dict(),
+                    "g_opt_state_dict": g_optimizer.state_dict(),
+                    "d_opt_state_dict": d_optimizer.state_dict(),
+                    "train_info": train_info,
+                },
+                osp.join(ckpt_dir, f"epoch-{epoch}.pth"),
+            )

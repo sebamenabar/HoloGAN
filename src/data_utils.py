@@ -11,15 +11,15 @@ import matplotlib.pyplot as plt
 def split_images_on_disc(images, disc_logits):
     if len(disc_logits.shape) == 2:
         disc_logits = torch.squeeze(disc_logits, 1)
-    are_real = disc_logits >= 0.5
+    are_real = disc_logits >= 0.0
     return images[are_real], images[~are_real]
 
 
 def disc_preds_to_label(disc_logits):
     if len(disc_logits.shape) == 2:
         disc_logits = torch.squeeze(disc_logits, 1)
-    disc_p = torch.sigmoid(disc_logits)
-    labels = np.where((disc_p >= 0.5).detach().cpu().numpy(), "Real", "Fake")
+    # disc_p = torch.sigmoid(disc_logits)
+    labels = np.where((disc_logits >= 0).detach().cpu().numpy(), "Real", "Fake")
     return labels
 
 

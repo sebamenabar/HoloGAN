@@ -11,6 +11,33 @@ def transform_voxel_to_match_image(voxel):
     return voxel
 
 
+def generate_transform_matrix(transform_params, in_size=64, out_size=64):
+    bsz = transform_params.size(0)
+    Ry = rad2Ry(transform_params[:, 0])
+    Rx = rad2Ry(transform_params[:, 1])
+    # Rz = rad2Ry(transform_params[:, 0])
+    S = scale2S(transform_params[:, 3:6])
+    T = translation2T(transform_params[:, 6:])
+
+    # Move origin to old grid center translation
+    # This is to rotate the objects around it's origin
+    CO = (
+        translation2T(torch.tensor([[-in_size * 0.5, -in_size * 0.5, -in_size * 0.5]]))
+        .repeat(bsz, 1, 1)
+        .to(transform_params.device)
+    )
+    # Move origin to new grid border
+    DN = (
+        translation2T(torch.tensor([[out_size * 0.5, out_size * 0.5, out_size * 0.5]]))
+        .repeat(bsz, 1, 1)
+        .to(transform_params.device)
+    )
+
+    # DN * T * S * Rx * Ry * CO
+    A = torch.bmm(torch.bmm(torch.bmm(torch.bmm(torch.bmm(DN, T), S), Rx), Ry), CO)
+    return A
+
+
 def generate_inv_transform_matrix(
     transform_params, in_size=64, out_size=64,
 ):
@@ -23,21 +50,33 @@ def generate_inv_transform_matrix(
 
     # Move origin to old grid center translation
     # This is to rotate the objects around it's origin
-    CO_inv = invT(
-        translation2T(torch.tensor([[-in_size * 0.5, -in_size * 0.5, -in_size * 0.5]]))
-    ).repeat(bsz, 1, 1).to(transform_params.device)
+    CO_inv = (
+        invT(
+            translation2T(
+                torch.tensor([[-in_size * 0.5, -in_size * 0.5, -in_size * 0.5]])
+            )
+        )
+        .repeat(bsz, 1, 1)
+        .to(transform_params.device)
+    )
     # Move origin to new grid border
-    DN_inv = invT(
-        translation2T(torch.tensor([[out_size * 0.5, out_size * 0.5, out_size * 0.5]]))
-    ).repeat(bsz, 1, 1).to(transform_params.device)
+    DN_inv = (
+        invT(
+            translation2T(
+                torch.tensor([[out_size * 0.5, out_size * 0.5, out_size * 0.5]])
+            )
+        )
+        .repeat(bsz, 1, 1)
+        .to(transform_params.device)
+    )
 
+    # CO^-1 * Ry^-1 * Rx^-1 * S^-1 * T^-1 * DN^-1
     A = torch.bmm(
         torch.bmm(
             torch.bmm(torch.bmm(torch.bmm(CO_inv, Ry_inv), Rx_inv), S_inv), T_inv
         ),
         DN_inv,
     )
-
     return A
 
 

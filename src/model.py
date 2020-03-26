@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from layers import AdaIN, AdaIN2D
 from transformation_utils import (
+    generate_transform_matrix,
     generate_inv_transform_matrix,
     transform_voxel_to_match_image,
 )
@@ -14,6 +15,7 @@ class ObjectGenerator(nn.Module):
         z_dim,
         w_dim,
         use_learnable_proj=True,  # TEMP: to replace with perspective projection
+        use_inverse_transform=True,
         w_shape=(4, 4, 4),
         upconv_filters=[128, 64],
         upconv_ks=[3, 3],  # for upconvolution, ks: kernel_size
@@ -28,6 +30,7 @@ class ObjectGenerator(nn.Module):
         self.w_shape = w_shape
         self.upconv_filters = upconv_filters
         self.use_learnable_proj = use_learnable_proj
+        self.use_inverse_transform = use_inverse_transform
 
         self.adain0 = AdaIN(w_dim, z_dim)
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
@@ -60,7 +63,7 @@ class ObjectGenerator(nn.Module):
         self.deconvs = nn.ModuleList(deconvs)
         self.adains = nn.ModuleList(adains)
 
-        if use_learnable_proj or True:
+        if use_learnable_proj and False:
             self.proj1 = nn.ConvTranspose3d(
                 in_channels=upconv_filters[-1],
                 out_channels=upconv_filters[-1],
@@ -115,17 +118,20 @@ class ObjectGenerator(nn.Module):
             h = adain(h, z)
             h = self.lrelu(h)
 
-        h = self.proj1(h)
-        h = self.lrelu(h)
+        # h = self.proj1(h)
+        # h = self.lrelu(h)
 
-        h = self.proj2(h)
-        h = self.lrelu(h)
+        # h = self.proj2(h)
+        # h = self.lrelu(h)
         if self.use_learnable_proj:
             h = transform_voxel_to_match_image(h)
 
             out = h
         else:
-            A = generate_inv_transform_matrix(view_in)
+            if self.use_inverse_transform:
+                A = generate_inv_transform_matrix(view_in)
+            else:
+                A = generate_transform_matrix(view_in)
             A = A[:, :3]
             grid = nn.functional.affine_grid(A, h.size())
             h_rotated = nn.functional.grid_sample(h, grid)
@@ -149,6 +155,7 @@ class Generator(nn.Module):
         upconv_paddings=[1, 1],
         upconv_out_paddings=[0, 0],
         use_learnable_proj=True,
+        use_inverse_transform=True,
     ):
         super().__init__()
 
@@ -156,14 +163,14 @@ class Generator(nn.Module):
         self.z_dim_fg = z_dim_fg
 
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
-        self.bg_generator = ObjectGenerator(z_dim_bg, w_dim_bg, use_learnable_proj)
-        self.fg_generator = ObjectGenerator(z_dim_fg, w_dim_fg, use_learnable_proj)
-
-        self.proj_conv = nn.Conv2d(
-            in_channels=1024,
-            out_channels=256,
-            kernel_size=1,
+        self.bg_generator = ObjectGenerator(
+            z_dim_bg, w_dim_bg, use_learnable_proj, use_inverse_transform
         )
+        self.fg_generator = ObjectGenerator(
+            z_dim_fg, w_dim_fg, use_learnable_proj, use_inverse_transform
+        )
+
+        self.proj_conv = nn.Conv2d(in_channels=1024, out_channels=256, kernel_size=1,)
         deconvs = []
         inst_norms = []
         prev_out_channels = 256
@@ -292,14 +299,13 @@ class Discriminator(nn.Module):
 
         self.style_discriminator = style_discriminator
         if self.style_discriminator:
-            print('USING STYLE DISCRIMINATOR')
+            print("USING STYLE DISCRIMINATOR")
             style_classifiers = []
             for f in filters:
                 style_classifiers.append(
-                    nn.utils.spectral_norm(nn.Linear(
-                        in_features=2 * f,
-                        out_features=1,
-                    ))
+                    nn.utils.spectral_norm(
+                        nn.Linear(in_features=2 * f, out_features=1,)
+                    )
                 )
             self.style_classifiers = nn.ModuleList(style_classifiers)
 
@@ -317,6 +323,7 @@ class Discriminator(nn.Module):
 
     def forward(self, x):
         x = (x * 2) - 1
+        style_outputs = []
         for i, (conv, norm) in enumerate(zip(self.convs, self.inst_norms)):
             x = conv(x)
             x = norm(x)
@@ -324,8 +331,11 @@ class Discriminator(nn.Module):
             if self.style_discriminator:
                 var, mean = torch.var_mean(x, dim=(2, 3))
                 style = torch.cat((var, mean), 1)
-                self.style_classifiers[i](style)
+                style_outputs.append(self.style_classifiers[i](style))
 
             x = self.lrelu(x)
+
+        if self.style_discriminator:
+            return style_outputs, self.linear(x.view(x.size(0), -1)).squeeze(1)
 
         return self.linear(x.view(x.size(0), -1)).squeeze(1)

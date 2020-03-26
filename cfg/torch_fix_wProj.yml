@@ -8,7 +8,7 @@ num_workers: 4
 train:
   data_dir: '/mnt/ialabnas/datasets/CLEVR_v1.0/images/train'
   batch_size: 64
-  epochs: 100
+  epochs: 150
   snapshot_interval: 5
   image_height: 64
   image_width: 64
@@ -36,7 +36,6 @@ model:
     ks: [4, 4]
     strides: [2, 2]
     use_learnable_proj: False
-    use_inverse_transform: False
   discriminator:
     style_discriminator: True
     filters: [64, 128, 256, 512]
