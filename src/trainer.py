@@ -23,7 +23,7 @@ from torch_intermediate_layer_getter import IntermediateLayerGetter as MidGetter
 from metrics import calculate_frechet_distance
 from sampling_utils import sample_z, sample_view
 from model import Generator, Discriminator
-from misc_utils import mkdir_p, flatten_json_iterative_solution, transform_curriculum
+from misc_utils import mkdir_p, flatten_json_iterative_solution, transform_curriculum, new_transform_curriculum
 from data_utils import (
     ImageFilelist,
     disc_preds_to_label,
@@ -99,6 +99,7 @@ class Trainer:
         print("Initiating InceptionNet")
         block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
         self.inception = InceptionV3([block_idx])
+        self.inception.train(False)
 
         print("Generator")
         print(self.generator)
@@ -113,6 +114,7 @@ class Trainer:
         )
 
         self.bce = nn.BCEWithLogitsLoss().to(self.device)
+        self.l1 = nn.L1Loss()
 
         # TODO resume model
 
@@ -236,16 +238,19 @@ class Trainer:
         return d_fake_logits, d_real_logits, generated
 
     def train_epoch(self, epoch):
+        print(f'Curriculum epoch {epoch}:')
+        curriculum = new_transform_curriculum(epoch)
+        print(curriculum)
         if epoch == 0:
             fid = self.calculate_frechet_distance(epoch, 0)
-            print(f"EPOCH {epoch}: {fid:.3f}")
+            print(f"EPOCH {epoch} FID: {fid:.3f}")
         train_iter = self.prepare_dataloader()
         pbar = tqdm(
             enumerate(train_iter),
             total=self.steps_per_epoch,
             ncols=0,
             desc=f"E:{epoch}",
-            mininterval=10,
+            mininterval=30,
             miniters=50,
         )
         total_d_loss = 0.0
@@ -255,7 +260,7 @@ class Trainer:
         real_samples_counter = 0
         fake_are_fake_samples_counter = 0
         fake_samples_counter = 0
-        l1 = 0.0
+        l1 = torch.tensor(0.0)
 
         z_bg = z_fg = None
         self.generator.train(True)
@@ -279,14 +284,14 @@ class Trainer:
                 bg_view = sample_view(
                     batch_size=bsz,
                     num_objects=1,
-                    azimuth_range=(-3, 3),
-                    elevation_range=(-3, 3),
-                    scale_range=(0.95, 1.05),
+                    azimuth_range=(-10, 10),
+                    elevation_range=(-5, 5),
+                    scale_range=(0.9, 1.1),
                 )
                 fg_view = sample_view(
                     batch_size=bsz,
                     num_objects=z_fg.shape[1],
-                    **transform_curriculum(epoch - 5),
+                    **curriculum,
                 )
 
             image_batch = image_batch.to(self.device)
@@ -295,13 +300,32 @@ class Trainer:
             bg_view = bg_view.to(self.device)
             fg_view = fg_view.to(self.device)
 
-            generated = self.generator(z_bg, z_fg, bg_view, fg_view)
+            generated, _ = self.generator(
+                z_bg, z_fg, bg_view, fg_view, return_voxel=True
+            )
+            # voxel = voxel.detach()
+            # with torch.set_grad_enabled(False):
+            #     z_fg_pad = torch.zeros(z_fg.size(0), 1, z_fg.size(2)).to(self.device)
+            #     # z_fg = torch.cat((z_fg_pad.to(z_fg.device), z_fg), 1)
+            #     view_fg_pad = sample_view(bsz, num_objects=1).to(self.device)
+            #     # fg_view = torch.cat((view_fg_pad.to(fg_view.device), fg_view), 1)
+            #     # voxel = self.generator.gen_voxel_only(z_bg, z_fg, bg_view, fg_view)
+            #     padded_voxel = self.generator.fg_generator(z_fg_pad, view_fg_pad)
+            #     padded_voxel = torch.max(
+            #         torch.cat((voxel.unsqueeze(1), padded_voxel), 1), 1
+            #     )[0]
+            #     l1 = self.l1(padded_voxel, voxel.detach())
+            #     # if l1.requires_grad:
+            #     #     (l1 * 1e-3).backward()
+            #     del z_fg_pad, view_fg_pad, padded_voxel, voxel
+
             d_fake_style_logits, d_fake_logits = self.d_mid_getter(generated.detach())
             # image_batch = (image_batch * 2) - 1
             if self.cfg.train.discriminator.random_noise or (self.curr_step <= 10000):
                 image_batch = image_batch + torch.normal(
                     0, 0.02, image_batch.size(), device=self.device
                 )
+                image_batch = image_batch.clamp(0, 1)
             d_real_style_logits, d_real_logits = self.d_mid_getter(image_batch)
 
             d_loss = self.discriminator_loss(
@@ -310,18 +334,22 @@ class Trainer:
                 d_real_style_logits.values(),
                 d_fake_style_logits.values(),
             )
-            self.discriminator.zero_grad()
+            # self.discriminator.zero_grad()
             d_loss.backward()
             self.d_optimizer.step()
+            self.discriminator.zero_grad()
 
             d_fake_style_logits, d_fake_logits = self.d_mid_getter(generated)
             g_loss = self.generator_loss(d_fake_logits, d_fake_style_logits.values())
-            self.generator.zero_grad()
+            # self.generator.zero_grad()
             g_loss.backward()
             self.g_optimizer.step()
+            self.generator.zero_grad()
+
+            # l1.backward()
+            # (g_loss + l1).backward()
 
             total_d_loss += d_loss.detach().cpu().numpy()
-            # total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
             total_g_loss += g_loss.detach().cpu().numpy()
 
             real_samples_counter += d_real_logits.size(0)
@@ -333,51 +361,16 @@ class Trainer:
             fake_are_fake = (d_fake_logits < 0).cpu().numpy().sum()
             fake_are_fake_samples_counter += fake_are_fake
 
-            # according to paper generator makes 2 steps per each step of the disc
-            # for _ in range(self.cfg.train.generator.update_freq - 1):
-            #     with tf.GradientTape(persistent=True) as tape:
-            #         # fake img
-            #         d_fake_logits, _, generated = self.batch_logits(
-            #             image_batch, z_bg, z_fg
-            #         )
-            #         g_loss = self.generator_loss(d_fake_logits)
-            #     g_variables = self.generator.trainable_variables
-            #     g_gradients = tape.gradient(g_loss, g_variables)
-            #     self.g_optimizer.apply_gradients(zip(g_gradients, g_variables))
-            #     total_g_loss += g_loss.numpy() / self.cfg.train.generator.update_freq
-
             pbar.set_postfix(
-                g_loss=f"{g_loss.detach().cpu().numpy():.1f}({total_g_loss / (counter):.1f})",
-                d_loss=f"{d_loss.detach().cpu().numpy():.3f}({total_d_loss / (counter):.3f})",
+                g_l=f"{g_loss.detach().cpu().numpy():.1f}({total_g_loss / (counter):.1f})",
+                d_l=f"{d_loss.detach().cpu().numpy():.3f}({total_d_loss / (counter):.3f})",
                 rrr=f"{real_are_real / d_real_logits.shape[0]:.1f}({real_are_real_samples_counter / real_samples_counter:.1f})",
                 frf=f"{fake_are_fake / d_fake_logits.shape[0]:.1f}({fake_are_fake_samples_counter / fake_samples_counter:.1f})",
-                l1=l1,
+                l1=f"{l1.item():.3f}",
                 refresh=False,
             )
 
             if it % (self.cfg.train.it_log_interval) == 0:
-                with torch.no_grad():
-                    z_fg_pad = torch.zeros(z_fg.size(0), 1, z_fg.size(2)).to(
-                        z_fg.device
-                    )
-                    z_fg_padded = torch.cat((z_fg_pad, z_fg), 1)
-                    view_fg_pad = sample_view(bsz, num_objects=1).to(fg_view.device)
-                    view_fg_padded = torch.cat((view_fg_pad, fg_view), 1)
-
-                    voxel = self.generator.gen_voxel_only(z_bg, z_fg, bg_view, fg_view)
-                    pad_voxel = self.generator.gen_voxel_only(
-                        z_bg, z_fg_padded, bg_view, view_fg_padded
-                    )
-                    l1 = (voxel - pad_voxel).abs().mean().item()
-
-                    del (
-                        z_fg_pad,
-                        z_fg_padded,
-                        view_fg_pad,
-                        view_fg_padded,
-                        voxel,
-                        pad_voxel,
-                    )
 
                 self.log_training(
                     d_loss=total_d_loss / counter,
@@ -390,7 +383,7 @@ class Trainer:
                     d_real_logits=d_real_logits,
                     epoch=epoch,
                     it=it,
-                    l1=l1,
+                    l1=l1.item(),
                 )
                 real_are_real_samples_counter = 0
                 fake_are_fake_samples_counter = 0
@@ -403,11 +396,25 @@ class Trainer:
             counter += 1
             gc.collect()
 
-        del train_iter
-        fid = self.calculate_frechet_distance(epoch, it)
-        print(f"EPOCH {epoch} FID: {fid:.3f}")
+        del (
+            train_iter,
+            image_batch,
+            z_fg,
+            z_bg,
+            fg_view,
+            bg_view,
+            d_fake_logits,
+            # d_fake_style_logits,
+            d_real_logits,
+            # d_real_style_logits,
+            # d_loss,
+            # g_loss,
+        )
+        if ((epoch + 1) % 10) == 0:
+            fid = self.calculate_frechet_distance(epoch, it)
+            print(f"EPOCH {epoch} FID: {fid:.3f}")
 
-    def calculate_frechet_distance(self, epoch, it, num_samples=64):
+    def calculate_frechet_distance(self, epoch, it, num_samples=32):
         num_samples = min(max(num_samples, 2), len(self.dataset))
         real_images = torch.stack(
             [self.dataset[i] for i in torch.randint(len(self.dataset), (num_samples,))]
@@ -427,14 +434,14 @@ class Trainer:
         bg_view = sample_view(
             batch_size=num_samples,
             num_objects=1,
-            azimuth_range=(-3, 3),
-            elevation_range=(-3, 3),
-            scale_range=(0.95, 1.05),
+            azimuth_range=(-10, 10),
+            elevation_range=(-5, 5),
+            scale_range=(0.9, 1.1),
         )
         fg_view = sample_view(
             batch_size=num_samples,
             num_objects=z_fg.shape[1],
-            **transform_curriculum(epoch - 5),
+            **new_transform_curriculum(epoch),
         )
         with torch.no_grad():
             fake_images = self.generator(
@@ -443,13 +450,19 @@ class Trainer:
                 bg_view.to(self.device),
                 fg_view.to(self.device),
             )
+            torch.cuda.empty_cache()
+            self.inception = self.inception.to(self.device)
             fid = calculate_frechet_distance(
-                real_images.numpy(), fake_images.cpu().numpy(), self.inception
+                real_images.to(self.device), fake_images, self.inception
             )
+            self.inception = self.inception.cpu()
+            del real_images, fake_images, z_bg, z_fg, bg_view, fg_view
+            torch.cuda.empty_cache()
+
         if self.log:
             self.summary_writer.add_scalar("fid", fid, global_step=self.curr_step + it)
             self.comet.log_metrics(
-                {"fid": fid,}, step=self.curr_step + it, epoch=epoch,
+                {"fid": fid}, step=self.curr_step + it, epoch=epoch,
             )
         return fid
 
@@ -552,12 +565,12 @@ class Trainer:
             )
             fig = show_batch(fake_images, labels=disc_preds_to_label(d_fake_logits))
             self.comet.log_figure(
-                figure=fig, figure_name="" f"fake_{epoch}_{it}.jpg", step=curr_step,
+                figure=fig, figure_name="" f"fake", step=curr_step,
             )
             plt.close(fig)
             fig = show_batch(real_images, labels=disc_preds_to_label(d_real_logits))
             self.comet.log_figure(
-                figure=fig, figure_name="" f"real_{epoch}_{it}.jpg", step=curr_step,
+                figure=fig, figure_name="" f"real", step=curr_step,
             )
             plt.close(fig)
 

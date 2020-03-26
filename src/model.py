@@ -60,7 +60,7 @@ class ObjectGenerator(nn.Module):
         self.deconvs = nn.ModuleList(deconvs)
         self.adains = nn.ModuleList(adains)
 
-        if use_learnable_proj:
+        if use_learnable_proj or True:
             self.proj1 = nn.ConvTranspose3d(
                 in_channels=upconv_filters[-1],
                 out_channels=upconv_filters[-1],
@@ -115,12 +115,12 @@ class ObjectGenerator(nn.Module):
             h = adain(h, z)
             h = self.lrelu(h)
 
-        if self.use_learnable_proj:
-            h = self.proj1(h)
-            h = self.lrelu(h)
+        h = self.proj1(h)
+        h = self.lrelu(h)
 
-            h = self.proj2(h)
-            h = self.lrelu(h)
+        h = self.proj2(h)
+        h = self.lrelu(h)
+        if self.use_learnable_proj:
             h = transform_voxel_to_match_image(h)
 
             out = h

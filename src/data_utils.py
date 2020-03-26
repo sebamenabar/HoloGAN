@@ -25,9 +25,9 @@ def disc_preds_to_label(disc_logits):
 
 def show_batch(image_batch, labels=None):
     image_batch = image_batch.detach().cpu().permute(0, 2, 3, 1)
-    if (image_batch < 0).numpy().any() or (image_batch > 1).numpy().any():
-        print('image batch out of bounds')
-        print(image_batch)
+    # if (image_batch < 0).numpy().any() or (image_batch > 1).numpy().any():
+    #     print('image batch out of bounds')
+    #     print(image_batch)
     #     image_batch = (image_batch + 1) / 2
     fig = plt.figure(figsize=(12, 12))
     for n in range(min(64, image_batch.shape[0])):
