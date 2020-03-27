@@ -14,8 +14,8 @@ class ObjectGenerator(nn.Module):
         self,
         z_dim,
         w_dim,
-        use_learnable_proj=True,  # TEMP: to replace with perspective projection
-        use_inverse_transform=True,
+        use_learnable_proj=False,  # TEMP: to replace with perspective projection
+        use_inverse_transform=False,
         w_shape=(4, 4, 4),
         upconv_filters=[128, 64],
         upconv_ks=[3, 3],  # for upconvolution, ks: kernel_size
@@ -63,36 +63,35 @@ class ObjectGenerator(nn.Module):
         self.deconvs = nn.ModuleList(deconvs)
         self.adains = nn.ModuleList(adains)
 
-        if use_learnable_proj and False:
-            self.proj1 = nn.ConvTranspose3d(
-                in_channels=upconv_filters[-1],
-                out_channels=upconv_filters[-1],
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
-            self.proj2 = nn.ConvTranspose3d(
-                in_channels=upconv_filters[-1],
-                out_channels=upconv_filters[-1],
-                kernel_size=3,
-                stride=1,
-                padding=1,
-            )
-            pass
-        else:
-            print("USING 3D TRANSFORM FOR OBJECT PROJECTION")
+        # if use_learnable_proj and False:
+        #     self.proj1 = nn.ConvTranspose3d(
+        #         in_channels=upconv_filters[-1],
+        #         out_channels=upconv_filters[-1],
+        #         kernel_size=3,
+        #         stride=1,
+        #         padding=1,
+        #     )
+        #     self.proj2 = nn.ConvTranspose3d(
+        #         in_channels=upconv_filters[-1],
+        #         out_channels=upconv_filters[-1],
+        #         kernel_size=3,
+        #         stride=1,
+        #         padding=1,
+        #     )
+        #     pass
+        # else:
+        #     print("USING 3D TRANSFORM FOR OBJECT PROJECTION")
         self.init_params()
 
     def init_params(self):
         for deconv in self.deconvs:
             nn.init.normal_(deconv.weight, std=0.02)
             nn.init.zeros_(deconv.bias)
-        if self.use_learnable_proj:
-            nn.init.normal_(self.proj1.weight, std=0.02)
-            nn.init.zeros_(self.proj1.bias)
-            nn.init.normal_(self.proj2.weight, std=0.02)
-            nn.init.zeros_(self.proj2.bias)
-            pass
+        # if self.use_learnable_proj:
+        #     nn.init.normal_(self.proj1.weight, std=0.02)
+        #     nn.init.zeros_(self.proj1.bias)
+        #     nn.init.normal_(self.proj2.weight, std=0.02)
+        #     nn.init.zeros_(self.proj2.bias)
 
     def forward(self, z, view_in=None):
         z_dim = z.size(-1)

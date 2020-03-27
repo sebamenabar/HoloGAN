@@ -370,13 +370,18 @@ def wrap_disc(disc):
 
 
 BACKGROUND_VIEW_RANGE = dict(
-    azimuth_range=(-10, 10), elevation_range=(-5, 5), scale_range=(0.9, 1.1),
+    azimuth_range=(-15, 15),
+    elevation_range=(-15, 15),
+    scale_range=(0.9, 1.0),
+    tx_range=(-0.05, 0.05),
+    ty_range=(-0.05, 0.05),
+    tz_range=(-0.05, 0.05),
 )
 FOREGROUND_VIEW_RANGE = {
-    "azimuth_range": (-30, 30),
-    "scale_range": (0.8, 1.2),
-    "tx_range": (-2, 2),
-    "tz_range": (-2, 2),
+    "azimuth_range": (-180, 180),
+    "scale_range": (0.5, 1.0),
+    "tx_range": (-1, 1),
+    "tz_range": (-1, 1),
 }
 
 if __name__ == "__main__":

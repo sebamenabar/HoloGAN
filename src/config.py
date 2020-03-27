@@ -51,14 +51,14 @@ __C.model = edict(
         filters=[64, 64],
         ks=[4, 4],
         strides=[2, 2],
-        use_learnable_proj=True,
-        use_inverse_transform=True,
+        use_learnable_proj=False,
+        use_inverse_transform=False,
     ),
     discriminator=edict(
         filters=[64, 128, 256, 512],
         ks=[5, 5, 5, 5],
         strides=[2, 2, 2, 2],
-        style_discriminator=False,
+        style_discriminator=True,
     ),
 )
 

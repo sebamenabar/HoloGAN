@@ -29,9 +29,9 @@ def sample_view(
     elevation_range=(0, 0),
     roll_range=(0.0, 0.0),
     scale_range=(0.5, 1.0),
-    tx_range=(-5, 5),
+    tx_range=(-1, 1),
     ty_range=(0, 0),
-    tz_range=(-5, 5),
+    tz_range=(-1, 1),
 ):
     azimuth = uniform(
         (batch_size, num_objects, 1),

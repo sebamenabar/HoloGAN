@@ -11,10 +11,26 @@ def transform_voxel_to_match_image(voxel):
     return voxel
 
 
-def generate_transform_matrix(transform_params, in_size=64, out_size=64):
+def generate_transform_matrix(transform_params):
+    # bsz = transform_params.size(0)
+    Ry = rad2Ry(transform_params[:, 0])
+    Rx = rad2Rx(transform_params[:, 1])
+    # Rz = rad2Ry(transform_params[:, 0])
+    S = scale2S(transform_params[:, 3:6])
+    T = translation2T(transform_params[:, 6:])
+
+    # transforms are performed from left to right
+    # first rotation, then scale and finally translation
+    A = torch.bmm(torch.bmm(torch.bmm(Ry, Rx), S), T)
+    return A
+
+
+def generate_transform_matrix_with_recentering(
+    transform_params, in_size=64, out_size=64
+):
     bsz = transform_params.size(0)
     Ry = rad2Ry(transform_params[:, 0])
-    Rx = rad2Ry(transform_params[:, 1])
+    Rx = rad2Rx(transform_params[:, 1])
     # Rz = rad2Ry(transform_params[:, 0])
     S = scale2S(transform_params[:, 3:6])
     T = translation2T(transform_params[:, 6:])
