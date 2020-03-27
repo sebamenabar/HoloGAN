@@ -129,7 +129,6 @@ def train_epoch(
     d_opt,
     train_info,
     device=None,
-    disc_noise=False,
     writer=None,
 ):
     if device is None:
@@ -185,11 +184,6 @@ def train_epoch(
         #     (l1_loss * 1e-3).backward()
         # l1_loss = l1_loss.item()  # to free memory (?)
 
-        if disc_noise:
-            real_images = real_images + torch.normal(
-                0, 0.02, real_images.size(), device=device
-            )
-            real_images = real_images.clamp(0, 1)
         d_real_style_logits, d_real_logits = d(real_images)
         d_fake_style_logits, d_fake_logits = d(fake_images.detach())
         d_loss = discriminator_loss(

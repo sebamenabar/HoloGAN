@@ -59,6 +59,7 @@ __C.model = edict(
         ks=[5, 5, 5, 5],
         strides=[2, 2, 2, 2],
         style_discriminator=True,
+        random_noise=True,
     ),
 )
 

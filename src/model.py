@@ -264,9 +264,11 @@ class Discriminator(nn.Module):
         filters=[64, 128, 256, 512],
         ks=[5, 5, 5, 5],
         strides=[2, 2, 2, 2],
+        random_noise=True,
     ):
         super().__init__()
 
+        self.random_noise = random_noise
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
         convs = []
         inst_norms = []
@@ -322,6 +324,8 @@ class Discriminator(nn.Module):
 
     def forward(self, x):
         x = (x * 2) - 1
+        if self.random_noise:
+            x = x + torch.normal(0, 0.02, x.size(), device=self.device)
         style_outputs = []
         for i, (conv, norm) in enumerate(zip(self.convs, self.inst_norms)):
             x = conv(x)
