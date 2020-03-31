@@ -107,6 +107,8 @@ class ObjectGenerator(nn.Module):
             num_objs = 1
         if view_in is not None and len(view_in.size()) == 3:
             view_in = view_in.view(bsz * num_objs, 9)
+        if num_objs == 0:
+            return torch.zeros(bsz, num_objs, 64, 16, 16, 16, device=z.device)
 
         w = self.w.repeat(bsz * num_objs, 1, 1, 1, 1)
         h = self.adain0(w, z)
