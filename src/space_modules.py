@@ -224,9 +224,7 @@ class TransformDecoder(nn.Module):
         self.scale_center_encoder = nn.Linear(4, hidden_dim)
         # self.center_encoder = nn.Linear(2, dim1)
         # self.interaction1 = NeuralTensor(in_feat_dim, in_feat_dim, in_feat_dim)
-        self.interaction1 = nn.Bilinear(
-            hidden_dim, hidden_dim, hidden_dim, bias=True
-        )
+        self.interaction1 = nn.Bilinear(hidden_dim, hidden_dim, hidden_dim, bias=True)
         self.interaction2 = NeuralTensor(hidden_dim, in_feat_dim, hidden_dim)
         self.linear = nn.Linear(hidden_dim, hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, out_proj_dim)
@@ -371,9 +369,11 @@ class SceneEncoder(nn.Module):
         # z_depth = sample_gaussean(
         #     depth_mean, nn.functional.softplus(depth_log_std)
         # )  # (bsz, Hp, Wp, 1)
-        z_scale = sample_gaussean_sp(scale_mean, scale_log_std)  # (bsz, Hp, Wp, 2)
-        z_shift = sample_gaussean_sp(
-            center_shift_mean, center_shift_log_std
+        scale_std = nn.functional.softplus(scale_log_std)
+        z_scale = sample_gaussean(scale_mean, scale_std)  # (bsz, Hp, Wp, 2)
+        center_shift_std = nn.functional.softplus(center_shift_log_std)
+        z_shift = sample_gaussean(
+            center_shift_mean, center_shift_std
         )  # (bsz, Hp, Wp, 2)
         # z_what = sample_gaussean_sp(what_mean, what_log_std)
 
@@ -435,9 +435,9 @@ class SceneEncoder(nn.Module):
             # 'depth_mean': depth_mean,
             # 'depth_log_std': depth_log_std,
             "scale_mean": scale_mean,
-            "scale_log_std": scale_log_std,
+            "scale_std": scale_std,
             "center_shift_mean": center_shift_mean,
-            "center_shift_log_std": center_shift_log_std,
+            "center_shift_std": center_shift_std,
             "obj_pres": obj_pres,
             # "what_mean": what_mean,
             # "what_log_std": what_log_std,
