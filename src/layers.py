@@ -40,3 +40,13 @@ class AdaIN2D(nn.Module):
         x *= scale.view(*scale.size(), 1, 1)
         x += bias.view(*bias.size(), 1, 1)
         return x
+
+
+class NeuralTensor(nn.Module):
+    def __init__(self, in1_features, in2_features, out_features):
+        super().__init__()
+        self.bilinear = nn.Bilinear(in1_features, in2_features, out_features, bias=True)
+        self.linear = nn.Linear(in1_features + in2_features, out_features, bias=False)
+
+    def forward(self, x1, x2):
+        return self.bilinear(x1, x2) + self.linear(torch.cat((x1, x2), -1))
