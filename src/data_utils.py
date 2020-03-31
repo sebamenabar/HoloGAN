@@ -72,3 +72,23 @@ class ImageFilelist(data.Dataset):
 
     def __len__(self):
         return len(self.files)
+
+
+class ImageFilelistMultiscale(data.Dataset):
+    def __init__(self, imgs_dir, match, resolutions, loader=default_loader):
+        self.loader = loader
+        self.imgs_dir = imgs_dir
+        self.resolutions = resolutions
+        self.files = glob.glob(os.path.join(imgs_dir, match))
+
+    def __getitem__(self, index):
+        img_fp = self.files[index]
+        img = self.loader(img_fp)
+        imgs = [
+            transforms.functional.to_tensor(img.resize(res)) for res in self.resolutions
+        ]
+
+        return imgs
+
+    def __len__(self):
+        return len(self.files)

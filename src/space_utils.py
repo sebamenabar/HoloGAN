@@ -51,7 +51,7 @@ def select_and_pad_on_presence(features, presence):
 
 
 def process_decoded_transform(transform):
-    transform[..., :3] = torch.fmod(transform[..., :3], math.pi)  # .chunk(3, -1)
-    transform[..., 3:6] = torch.clamp(transform[..., 3:6], 0.5, 1.5)  # .chunk(3, -1)
-    transform[..., 6:] = torch.clamp(transform[..., 6:], -1, 1)  # .chunk(3, -1)
-    return transform
+    rotation = torch.fmod(transform[..., :3], math.pi)  # .chunk(3, -1)
+    scaling = torch.clamp(transform[..., 3:6], 0.5, 1.5)  # .chunk(3, -1)
+    translation = torch.clamp(transform[..., 6:], -1, 1)  # .chunk(3, -1)
+    return torch.cat((rotation, scaling, translation), -1)

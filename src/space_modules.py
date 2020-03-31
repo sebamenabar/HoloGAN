@@ -221,13 +221,13 @@ class TransformDecoder(nn.Module):
         super().__init__()
         if act == "elu":
             self.act = nn.ELU()
-        self.scale_center_encoder = nn.Linear(4, in_feat_dim)
+        self.scale_center_encoder = nn.Linear(4, hidden_dim)
         # self.center_encoder = nn.Linear(2, dim1)
         # self.interaction1 = NeuralTensor(in_feat_dim, in_feat_dim, in_feat_dim)
         self.interaction1 = nn.Bilinear(
-            in_feat_dim, in_feat_dim, in_feat_dim, bias=True
+            hidden_dim, hidden_dim, hidden_dim, bias=True
         )
-        self.interaction2 = NeuralTensor(in_feat_dim, in_feat_dim, hidden_dim)
+        self.interaction2 = NeuralTensor(hidden_dim, in_feat_dim, hidden_dim)
         self.linear = nn.Linear(hidden_dim, hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, out_proj_dim)
 
@@ -236,7 +236,7 @@ class TransformDecoder(nn.Module):
         scale_center = self.act(scale_center)
         int1 = self.interaction1(scale_center, scale_center)
         int1 = self.act(int1)
-        int2 = self.interaction2(img_features, int1)
+        int2 = self.interaction2(int1, img_features)
         int2 = self.act(int2)
         out = self.act(self.linear(int2))
         out = self.out_proj(out)
@@ -251,7 +251,7 @@ class SceneEncoder(nn.Module):
         z_depth_dim=1,
         z_scale_dim=2,
         z_shift_dim=2,
-        z_what_dim=32,
+        z_what_dim=64,
         img_feats_nc=128,
         glimpse_shape=(32, 32),
         anchor_shape=(48, 48),
@@ -263,6 +263,7 @@ class SceneEncoder(nn.Module):
         # self.z_depth_dim = z_depth_dim
         self.z_scale_dim = z_scale_dim
         self.z_shift_dim = z_shift_dim
+        self.z_what_dim = z_what_dim
         self.register_buffer("glimpse_shape", torch.tensor(glimpse_shape))
         self.register_buffer("anchor_shape", torch.tensor(anchor_shape))
 
@@ -271,6 +272,7 @@ class SceneEncoder(nn.Module):
             # + self.z_depth_dim * 2
             + self.z_scale_dim * 2
             + self.z_shift_dim * 2
+            # + self.z_what_dim * 2
         )
         self.znet = nn.Conv2d(
             in_channels=img_feats_nc, out_channels=self.z_dim, kernel_size=(1, 1),
@@ -293,7 +295,7 @@ class SceneEncoder(nn.Module):
             # nn.ELU(),
         )
         # self.glimpse_encoder = GlimpseEncoder(out_proj_dim=glimpse_enc_out_proj_dim)
-        self.transform_decoder = TransformDecoder(64)
+        self.transform_decoder = TransformDecoder(128, hidden_dim=64)
 
     def forward(self, img, presenceT=1):
         img_feats = self.img_encoder(img)
@@ -321,7 +323,7 @@ class SceneEncoder(nn.Module):
 
         return {
             "img_feats": img_feats,
-            "bg_feats": bg_feats,
+            "bg_feats": bg_feats[..., :-9],
             "bg_transform_params": bg_transform_params,
             "glimpses_info": glimpses_info,
             "obj_pres": obj_pres,
@@ -348,12 +350,15 @@ class SceneEncoder(nn.Module):
             scale_log_std,
             center_shift_mean,
             center_shift_log_std,
+            # what_mean,
+            # what_log_std,
         ) = Z.split(
             [
                 self.z_pres_dim,
                 # *(self.z_depth_dim,) * 2,
                 *(self.z_scale_dim,) * 2,
                 *(self.z_shift_dim,) * 2,
+                # *(self.z_what_dim,) * 2,
             ],
             dim=-1,
         )
@@ -366,11 +371,14 @@ class SceneEncoder(nn.Module):
         # z_depth = sample_gaussean(
         #     depth_mean, nn.functional.softplus(depth_log_std)
         # )  # (bsz, Hp, Wp, 1)
-        z_scale = sample_gaussean(scale_mean, scale_log_std)  # (bsz, Hp, Wp, 2)
-        z_shift = sample_gaussean_sp(center_shift_mean, center_shift_log_std)  # (bsz, Hp, Wp, 2)
+        z_scale = sample_gaussean_sp(scale_mean, scale_log_std)  # (bsz, Hp, Wp, 2)
+        z_shift = sample_gaussean_sp(
+            center_shift_mean, center_shift_log_std
+        )  # (bsz, Hp, Wp, 2)
+        # z_what = sample_gaussean_sp(what_mean, what_log_std)
 
         z_scale_wrt_anchor = torch.sigmoid(z_scale)  # Initial expected value of 0.5
-        # z_scale_abs: size in pixels, according to SPAIR, using a 
+        # z_scale_abs: size in pixels, according to SPAIR, using a
         # constant anchor instead of a possible
         # variable image size is better
         z_scale_abs = z_scale_wrt_anchor * self.anchor_shape
@@ -389,7 +397,7 @@ class SceneEncoder(nn.Module):
         ij_grid = torch.stack(
             torch.meshgrid((torch.arange(0, 1, 1 / Hp), torch.arange(0, 1, 1 / Wp))),
             dim=-1,
-        )
+        ).to(img.device)
         z_center_wrt_img = ij_grid.unsqueeze(0) + z_shift_wrt_img
         # z_center_wrt_img__11: transformed values of centers relative
         # to the image to range (-1, 1) to use with torch.nn.functional.make_grid
@@ -431,9 +439,12 @@ class SceneEncoder(nn.Module):
             "center_shift_mean": center_shift_mean,
             "center_shift_log_std": center_shift_log_std,
             "obj_pres": obj_pres,
+            # "what_mean": what_mean,
+            # "what_log_std": what_log_std,
             # 'z_depth': z_depth,
             "z_scale": z_scale,
             "z_shift": z_shift,
             "z_scale_wrt_img": z_scale_wrt_img,
             "z_center_wrt_img__11": z_center_wrt_img__11,
+            # "z_what": z_what,
         }
