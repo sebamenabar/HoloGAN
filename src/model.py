@@ -134,9 +134,9 @@ class ObjectGenerator(nn.Module):
             else:
                 A = generate_transform_matrix(view_in)
             A = A[:, :3]
-            grid = nn.functional.affine_grid(A, h.size())
-            h_rotated = nn.functional.grid_sample(h, grid)
-            h_rotated = transform_voxel_to_match_image(h_rotated)
+            grid = nn.functional.affine_grid(A, h.size(), align_corners=False)
+            h_rotated = nn.functional.grid_sample(h, grid, align_corners=False)
+            h_rotated = transform_voxel_to_match_image(h_rotated,)
 
             out = h_rotated
 
