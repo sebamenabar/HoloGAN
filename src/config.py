@@ -24,21 +24,20 @@ __C.num_workers = 0
 __C.train = edict(
     data_dir="",
     resume='',
-    batch_size=64,
-    epochs=50,
+    batch_size=4,
+    epochs=20,
     snapshot_interval=5,
-    image_height=64,
-    image_width=64,
-    it_log_interval=200,
-    obj_num_increase_epoch=5,
+    it_log_interval=2000,
     generator=edict(
         optimizer=edict(lr=0.0001, betas=(0.5, 0.999)),
-        update_freq=2,
-        fixed_z=False,
     ),
-    discriminator=edict(
+    scene_encoder=edict(
         optimizer=edict(lr=0.0001, betas=(0.5, 0.999)),
         random_noise=False,
+        scale_prior=(-2, 0.1),
+        center_prior=(0, 0.1),
+        presence_prior=3e-2,
+        kl_weight=1e-6,
     ),
 )
 
@@ -54,12 +53,12 @@ __C.model = edict(
         use_learnable_proj=False,
         use_inverse_transform=False,
     ),
-    discriminator=edict(
-        filters=[64, 128, 256, 512],
-        ks=[5, 5, 5, 5],
-        strides=[2, 2, 2, 2],
-        style_discriminator=True,
-        random_noise=True,
+    scene_encoder=edict(
+        ncs=[16, 32, 32, 64, 128, 256],
+        kss=[3, 4, 3, 4, 4, 4, 4],
+        ss=[1, 2, 1, 2, 2, 1],
+        ngs=[4, 8, 4, 8, 8, 16],
+        out_proj_dim=64,
     ),
 )
 
