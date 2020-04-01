@@ -3,34 +3,43 @@ import os.path as osp
 import sys
 import json
 import math
-import glob
-import gc
+
+# import glob
+# import gc
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.backends.cudnn as cudnn
 from torchvision.utils import make_grid
+import torchvision.transforms as T
 from torch.utils.tensorboard import SummaryWriter
+import torch.distributions as D
+from torch.distributions.kl import kl_divergence
 
 import pprint
 import matplotlib.pyplot as plt
 from comet_ml import Experiment
 from tqdm.autonotebook import tqdm
 
-from torch_intermediate_layer_getter import IntermediateLayerGetter as MidGetter
+# from torch_intermediate_layer_getter import IntermediateLayerGetter as MidGetter
 
 from metrics import calculate_frechet_distance
 from sampling_utils import sample_z, sample_view
-from model import Generator, Discriminator
-from misc_utils import mkdir_p, flatten_json_iterative_solution, transform_curriculum, new_transform_curriculum
+from model import Generator  # , Discriminator
+from space_modules import SceneEncoder
+from misc_utils import (
+    mkdir_p,
+    flatten_json_iterative_solution,
+)  # transform_curriculum, new_transform_curriculum
 from data_utils import (
-    ImageFilelist,
+    ImageFilelistMultiscale,
     disc_preds_to_label,
     split_images_on_disc,
     show_batch,
 )
-from inception import InceptionV3
+
+# from inception import InceptionV3
 
 
 class Logger(object):
@@ -83,38 +92,43 @@ class Trainer:
         print("Using device", self.device)
 
         self.generator = Generator(**cfg.model.generator).to(self.device)
-        self.discriminator = Discriminator(**cfg.model.discriminator).to(self.device)
-        if self.discriminator.style_discriminator:
-            return_layers = {
-                "style_classifiers.0": "style0",
-                "style_classifiers.1": "style1",
-                "style_classifiers.2": "style2",
-                "style_classifiers.3": "style3",
-            }
-        else:
-            return_layers = {}
-        self.d_mid_getter = MidGetter(
-            self.discriminator, return_layers=return_layers, keep_output=True
+        self.scene_encoder = SceneEncoder(**cfg.model.scene_encoder).to(self.device)
+        self.presence_prior = D.Bernoulli(cfg.train.scene_encoder.presence_prior)
+        self.scale_prior = D.Normal(
+            loc=cfg.train.scene_encoder.scale_prior[0],
+            scale=cfg.train.scene_encoder.scale_prior[1],
         )
-        print("Initiating InceptionNet")
-        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
-        self.inception = InceptionV3([block_idx])
-        self.inception.train(False)
+        self.center_prior = D.Normal(
+            loc=cfg.train.scene_encoder.center_prior[0],
+            scale=cfg.train.scene_encoder.center_prior[1],
+        )
+        # print("Initiating InceptionNet")
+        # block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+        # self.inception = InceptionV3([block_idx])
+        # self.inception.train(False)
 
         print("Generator")
         print(self.generator)
-        print("Discriminator")
-        print(self.discriminator)
+        print("Scene Encoder")
+        print(self.scene_encoder)
 
-        self.g_optimizer = optim.Adam(
-            self.generator.parameters(), **cfg.train.generator.optimizer
-        )
-        self.d_optimizer = optim.Adam(
-            self.discriminator.parameters(), **cfg.train.discriminator.optimizer
+        self.optimizer = optim.Adam(
+            [
+                {
+                    "params": self.generator.parameters(),
+                    "lr": cfg.train.generator.optimizer.lr,
+                    "betas": cfg.train.generator.optimizer.betas,
+                },
+                {
+                    "params": self.scene_encoder.parameters(),
+                    "lr": cfg.train.scene_encoder.optimizer.lr,
+                    "betas": cfg.train.scene_encoder.optimizer.betas,
+                },
+            ],
         )
 
-        self.bce = nn.BCEWithLogitsLoss().to(self.device)
-        self.l1 = nn.L1Loss()
+        # self.bce = nn.BCEWithLogitsLoss().to(self.device)
+        self.l1_loss = nn.L1Loss()
 
         # TODO resume model
 
@@ -130,57 +144,24 @@ class Trainer:
             "CUDA_VISIBLE_DEVICES", getattr(os.environ, "CUDA_VISIBLE_DEVICES", "-1")
         )
         self.comet.log_asset_data(json.dumps(self.cfg, indent=4), file_name="cfg.json")
-        self.comet.set_model_graph(f"{self.generator}\n{self.discriminator}")
+        self.comet.set_model_graph(f"{self.generator}\n{self.scene_encoder}")
         if cfg.cfg_file:
             self.comet.log_asset(cfg.cfg_file)
         self.comet.log_asset_folder("src")
 
-        # self.start_epoch = tf.Variable(0)
         self.curr_step = 0
         self.epoch = 0
-        # self.ckpt = tf.train.Checkpoint(
-        #     generator=self.generator,
-        #     discriminator=self.discriminator,
-        #     g_optimizer=self.g_optimizer,
-        #     d_optimizer=self.d_optimizer,
-        #     start_epoch=self.start_epoch,
-        #     curr_step=self.curr_step,
-        # )
-        # # if cfg.train.resume:
-        #     ckpt_resumer = tf.train.CheckpointManager(
-        #         self.ckpt, cfg.train.resume, max_to_keep=3,
-        #     )
-        #     # if a checkpoint exists, restore the latest checkpoint.
-        #     if ckpt_resumer.latest_checkpoint:
-        #         self.ckpt.restore(ckpt_resumer.latest_checkpoint)
-        #         print("Latest checkpoint restored!!", ckpt_resumer.latest_checkpoint)
-        #         print(
-        #             f"Last epoch trained:{self.start_epoch.numpy()}, Current step: {self.curr_step.numpy()}"
-        #         )
         if self.log:
             with open(osp.join(self.log_dir, "cfg.json"), "w") as f:
                 json.dump(cfg, f, indent=4)
-            # self.ckpt_manager = tf.train.CheckpointManager(
-            #     self.ckpt, self.model_dir, max_to_keep=3
-            # )
 
         self.prepare_dataset(self.cfg.train.data_dir)
         self.print_info()
 
-        if self.cfg.train.generator.fixed_z:
-            self.z_bg = sample_z(1, self.generator.z_dim_bg, num_objects=1).to(
-                self.device
-            )
-            self.z_fg = sample_z(1, self.generator.z_dim_fg, num_objects=1).to(
-                self.device
-            )
-            self.bg_view = sample_view(1, num_objects=1).to(self.device)
-            self.fg_view = sample_view(1, num_objects=1).to(self.device)
-        else:
-            self.z_bg = self.z_fg = self.bg_view = self.fg_view = None
-
     def prepare_dataset(self, data_dir):
-        self.dataset = ImageFilelist(data_dir, "*.png")
+        self.dataset = ImageFilelistMultiscale(
+            data_dir, "*.png", ((64, 64), (128, 128))
+        )
         self.num_tr = len(self.dataset)
         self.steps_per_epoch = int(math.ceil(self.num_tr / self.cfg.train.batch_size))
 
@@ -200,377 +181,257 @@ class Trainer:
         pprint.pprint("Size of train dataset: {}".format(self.num_tr))
         print("\n")
 
-    # lossess
-    def discriminator_loss(self, real, generated, style_real=None, style_fake=None):
-        real_loss = self.bce(real, torch.ones_like(real))
-        generated_loss = self.bce(generated, torch.zeros_like(generated))
-        total_disc_loss = real_loss + generated_loss
+    def recon_loss(self, decoded, target):
+        return self.l1_loss(decoded, target)
 
-        if style_real:
-            for logits in style_real:
-                style_real_loss = self.bce(logits, torch.ones_like(logits))
-                total_disc_loss = total_disc_loss + style_real_loss
-        if style_fake:
-            for logits in style_fake:
-                style_fake_loss = self.bce(logits, torch.zeros_like(logits))
-                total_disc_loss = total_disc_loss + style_fake_loss
+    def compute_kl_loss(
+        self,
+        presence_logits,
+        valid_indexes,
+        scale_mean,
+        scale_std,
+        center_shift_mean,
+        center_shift_std,
+        # presence_prior,
+        # scale_prior,
+        # center_prior,
+    ):
+        presence_likelihood = D.Bernoulli(logits=presence_logits)
+        presence_kl = kl_divergence(presence_likelihood, self.presence_prior).mean()
 
-        return total_disc_loss
+        scale_kl = center_kl = 0.0
+        if valid_indexes.sum() > 0:
+            scale_mean = scale_mean[valid_indexes]
+            scale_std = scale_std[valid_indexes]
+            scale_likelihood = D.Normal(loc=scale_mean, scale=scale_std)
+            scale_kl = kl_divergence(scale_likelihood, self.scale_prior).mean()
 
-    def generator_loss(self, generated, style_fake=None):
-        total_g_loss = self.bce(generated, torch.ones_like(generated))
-        if style_fake:
-            for logits in style_fake:
-                style_g_loss = self.bce(logits, torch.ones_like(logits))
-                total_g_loss = total_g_loss + style_g_loss
+            center_mean = center_shift_mean[valid_indexes]
+            center_std = center_shift_std[valid_indexes]
+            center_likelihood = D.Normal(loc=center_mean, scale=center_std)
+            center_kl = kl_divergence(center_likelihood, self.center_prior).mean()
 
-        return total_g_loss
-
-    def batch_logits(self, image_batch, z_bg, z_fg, bg_view, fg_view):
-        generated = self.generator(z_bg, z_fg, bg_view, fg_view)
-
-        d_fake_logits = self.discriminator(generated)
-        # image_batch = image_batch * 2) - 1
-        if self.cfg.train.discriminator.random_noise or self.curr_step <= 2000:
-            image_batch = image_batch + torch.normal(0, 0.1, image_batch.size())
-        d_real_logits = self.discriminator(image_batch)
-
-        return d_fake_logits, d_real_logits, generated
+        return presence_kl, scale_kl, center_kl
 
     def train_epoch(self, epoch):
-        print(f'Curriculum epoch {epoch}:')
-        curriculum = new_transform_curriculum(epoch)
-        print(curriculum)
-        if epoch == 0:
-            fid = self.calculate_frechet_distance(epoch, 0)
-            print(f"EPOCH {epoch} FID: {fid:.3f}")
-        train_iter = self.prepare_dataloader()
+        train_loader = self.prepare_dataloader()
         pbar = tqdm(
-            enumerate(train_iter),
+            enumerate(train_loader),
             total=self.steps_per_epoch,
             ncols=0,
             desc=f"E:{epoch}",
             mininterval=30,
             miniters=50,
         )
-        total_d_loss = 0.0
-        total_g_loss = 0.0
+        total_recon_loss = 0.0
+        total_presence_kl = 0.0
+        total_scale_kl = 0.0
+        total_center_kl = 0.0
+        total_num_objs = 0
         counter = 1
-        real_are_real_samples_counter = 0
-        real_samples_counter = 0
-        fake_are_fake_samples_counter = 0
-        fake_samples_counter = 0
-        l1 = torch.tensor(0.0)
 
-        z_bg = z_fg = None
         self.generator.train(True)
-        self.discriminator.train(True)
-        for it, image_batch in pbar:
-            bsz = image_batch.shape[0]
-            # generated random noise
-            if self.z_bg is not None:
-                # For overfitting one sample and debugging
-                z_bg = self.z_bg.repeat(bsz, 1, 1)
-                z_fg = self.z_fg.repeat(bsz, 1, 1)
-                bg_view = self.bg_view
-                fg_view = self.fg_view
-            else:
-                z_bg = sample_z(bsz, self.generator.z_dim_bg, num_objects=1)
-                z_fg = sample_z(
-                    bsz,
-                    self.generator.z_dim_fg,
-                    num_objects=torch.randint(3, 11, (1,)).item(),
-                )
-                bg_view = sample_view(
-                    batch_size=bsz,
-                    num_objects=1,
-                    azimuth_range=(-10, 10),
-                    elevation_range=(-5, 5),
-                    scale_range=(0.9, 1.1),
-                )
-                fg_view = sample_view(
-                    batch_size=bsz,
-                    num_objects=z_fg.shape[1],
-                    **curriculum,
-                )
+        self.scene_encoder.train(True)
+        for it, (image_batch64, image_batch128) in pbar:
 
-            image_batch = image_batch.to(self.device)
-            z_bg = z_bg.to(self.device)
-            z_fg = z_fg.to(self.device)
-            bg_view = bg_view.to(self.device)
-            fg_view = fg_view.to(self.device)
+            image_batch64 = image_batch64.to(self.device)
+            image_batch128 = image_batch128.to(self.device)
 
-            generated, _ = self.generator(
-                z_bg, z_fg, bg_view, fg_view, return_voxel=True
-            )
-            # voxel = voxel.detach()
-            # with torch.set_grad_enabled(False):
-            #     z_fg_pad = torch.zeros(z_fg.size(0), 1, z_fg.size(2)).to(self.device)
-            #     # z_fg = torch.cat((z_fg_pad.to(z_fg.device), z_fg), 1)
-            #     view_fg_pad = sample_view(bsz, num_objects=1).to(self.device)
-            #     # fg_view = torch.cat((view_fg_pad.to(fg_view.device), fg_view), 1)
-            #     # voxel = self.generator.gen_voxel_only(z_bg, z_fg, bg_view, fg_view)
-            #     padded_voxel = self.generator.fg_generator(z_fg_pad, view_fg_pad)
-            #     padded_voxel = torch.max(
-            #         torch.cat((voxel.unsqueeze(1), padded_voxel), 1), 1
-            #     )[0]
-            #     l1 = self.l1(padded_voxel, voxel.detach())
-            #     # if l1.requires_grad:
-            #     #     (l1 * 1e-3).backward()
-            #     del z_fg_pad, view_fg_pad, padded_voxel, voxel
-
-            d_fake_style_logits, d_fake_logits = self.d_mid_getter(generated.detach())
-            # image_batch = (image_batch * 2) - 1
-            if self.cfg.train.discriminator.random_noise or (self.curr_step <= 10000):
-                image_batch = image_batch + torch.normal(
-                    0, 0.02, image_batch.size(), device=self.device
+            if self.cfg.train.scene_encoder.random_noise or (self.curr_step <= 10000):
+                image_batch = image_batch128 + torch.normal(
+                    0, 0.02, image_batch128.size(), device=self.device
                 )
                 image_batch = image_batch.clamp(0, 1)
-            d_real_style_logits, d_real_logits = self.d_mid_getter(image_batch)
+            encoded_scene = self.scene_encoder(image_batch)
+            z_bg = encoded_scene["bg_feats"]
+            view_in_bg = encoded_scene["bg_transform_params"]
+            z_fg = encoded_scene["valid_img_feats"]
+            view_in_fg = encoded_scene["fg_transform_params"]
 
-            d_loss = self.discriminator_loss(
-                d_real_logits,
-                d_fake_logits,
-                d_real_style_logits.values(),
-                d_fake_style_logits.values(),
+            reconstructed = self.generator(
+                z_bg=z_bg, z_fg=z_fg, view_in_bg=view_in_bg, view_in_fg=view_in_fg
             )
-            # self.discriminator.zero_grad()
-            d_loss.backward()
-            self.d_optimizer.step()
-            self.discriminator.zero_grad()
+            recon_loss = self.recon_loss(reconstructed, image_batch64)
 
-            d_fake_style_logits, d_fake_logits = self.d_mid_getter(generated)
-            g_loss = self.generator_loss(d_fake_logits, d_fake_style_logits.values())
-            # self.generator.zero_grad()
-            g_loss.backward()
-            self.g_optimizer.step()
+            valid_indexes = encoded_scene["obj_pres"] >= 0.5
+            presence_logits = encoded_scene["glimpses_info"]["pres_p_logits"]
+            scale_mean, scale_std = (
+                encoded_scene["glimpses_info"]["scale_mean"],
+                encoded_scene["glimpses_info"]["scale_std"],
+            )
+            center_mean, center_std = (
+                encoded_scene["glimpses_info"]["center_shift_mean"],
+                encoded_scene["glimpses_info"]["center_shift_std"],
+            )
+            presence_kl, scale_kl, center_kl = self.compute_kl_loss(
+                presence_logits,
+                valid_indexes,
+                scale_mean,
+                scale_std,
+                center_mean,
+                center_std,
+            )
+            kl_loss = self.cfg.train.scene_encoder.kl_weight * (
+                presence_kl + scale_kl + center_kl
+            )
+            loss = recon_loss + kl_loss
+
+            loss.backward()
+            self.optimizer.step()
             self.generator.zero_grad()
+            self.scene_encoder.zero_grad()
 
-            # l1.backward()
-            # (g_loss + l1).backward()
-
-            total_d_loss += d_loss.detach().cpu().numpy()
-            total_g_loss += g_loss.detach().cpu().numpy()
-
-            real_samples_counter += d_real_logits.size(0)
-            fake_samples_counter += d_fake_logits.size(0)
-
-            real_are_real = (d_real_logits >= 0).cpu().numpy().sum()
-            real_are_real_samples_counter += real_are_real
-
-            fake_are_fake = (d_fake_logits < 0).cpu().numpy().sum()
-            fake_are_fake_samples_counter += fake_are_fake
+            total_recon_loss += recon_loss.detach().cpu().numpy()
+            total_presence_kl += presence_kl.detach().cpu().numpy()
+            total_scale_kl += scale_kl.detach().cpu().numpy()
+            total_center_kl += center_kl.detach().cpu().numpy()
+            nobjs = z_fg.size(1)
+            total_num_objs += nobjs
 
             pbar.set_postfix(
-                g_l=f"{g_loss.detach().cpu().numpy():.1f}({total_g_loss / (counter):.1f})",
-                d_l=f"{d_loss.detach().cpu().numpy():.3f}({total_d_loss / (counter):.3f})",
-                rrr=f"{real_are_real / d_real_logits.shape[0]:.1f}({real_are_real_samples_counter / real_samples_counter:.1f})",
-                frf=f"{fake_are_fake / d_fake_logits.shape[0]:.1f}({fake_are_fake_samples_counter / fake_samples_counter:.1f})",
-                l1=f"{l1.item():.3f}",
+                recon=f"{recon_loss.detach().cpu().numpy():.3f}({total_recon_loss / (counter):.3f})",
+                presence=f"{presence_kl.detach().cpu().numpy():.1E}({total_presence_kl / (counter):.1E})",
+                scale=f"{scale_kl.detach().cpu().numpy():.3f}({total_scale_kl / (counter):.3f})",
+                center=f"{center_kl.detach().cpu().numpy():.2f}({total_center_kl / (counter):.2f})",
+                nobjs=f"{nobjs}({total_num_objs / (counter):.1f})",
                 refresh=False,
             )
 
             if it % (self.cfg.train.it_log_interval) == 0:
 
                 self.log_training(
-                    d_loss=total_d_loss / counter,
-                    g_loss=total_g_loss / counter,
-                    real_are_real=real_are_real_samples_counter / real_samples_counter,
-                    fake_are_fake=fake_are_fake_samples_counter / fake_samples_counter,
-                    fake_images=generated,
-                    real_images=image_batch,
-                    d_fake_logits=d_fake_logits,
-                    d_real_logits=d_real_logits,
+                    recon_loss=total_recon_loss / counter,
+                    presence_kl=total_presence_kl / counter,
+                    scale_kl=total_scale_kl / counter,
+                    center_kl=total_center_kl / counter,
+                    source_images=image_batch64,
+                    reconstructed_images=reconstructed,
+                    reconstructed_nobjs=valid_indexes.sum((1, 2)),
+                    nobjs=total_num_objs / counter,
                     epoch=epoch,
                     it=it,
-                    l1=l1.item(),
                 )
-                real_are_real_samples_counter = 0
-                fake_are_fake_samples_counter = 0
-                real_samples_counter = 0
-                fake_samples_counter = 0
-                total_d_loss = 0.0
-                total_g_loss = 0.0
+
+                total_recon_loss = 0.0
+                total_presence_kl = 0.0
+                total_scale_kl = 0.0
+                total_center_kl = 0.0
+                total_num_objs = 0
                 counter = 0
 
             counter += 1
-            gc.collect()
 
-        del (
-            train_iter,
-            image_batch,
-            z_fg,
-            z_bg,
-            fg_view,
-            bg_view,
-            d_fake_logits,
-            # d_fake_style_logits,
-            d_real_logits,
-            # d_real_style_logits,
-            # d_loss,
-            # g_loss,
-        )
-        if ((epoch + 1) % 10) == 0:
-            fid = self.calculate_frechet_distance(epoch, it)
-            print(f"EPOCH {epoch} FID: {fid:.3f}")
+    # def calculate_frechet_distance(self, epoch, it, num_samples=32):
+    #     num_samples = min(max(num_samples, 2), len(self.dataset))
+    #     real_images = torch.stack(
+    #         [self.dataset[i] for i in torch.randint(len(self.dataset), (num_samples,))]
+    #     )
+    #     z_bg = sample_z(num_samples, self.generator.z_dim_bg, num_objects=1)
+    #     z_fg = sample_z(
+    #         num_samples,
+    #         self.generator.z_dim_fg,
+    #         num_objects=torch.randint(3, 11, (1,)).item(),
+    #         # num_objects=(
+    #         #     3,
+    #         #     min(
+    #         #         10, 3 + 1 * (epoch // self.cfg.train.obj_num_increase_epoch)
+    #         #     ),
+    #         # ),
+    #     )
+    #     bg_view = sample_view(
+    #         batch_size=num_samples,
+    #         num_objects=1,
+    #         azimuth_range=(-10, 10),
+    #         elevation_range=(-5, 5),
+    #         scale_range=(0.9, 1.1),
+    #     )
+    #     fg_view = sample_view(
+    #         batch_size=num_samples,
+    #         num_objects=z_fg.shape[1],
+    #         **new_transform_curriculum(epoch),
+    #     )
+    #     with torch.no_grad():
+    #         fake_images = self.generator(
+    #             z_bg.to(self.device),
+    #             z_fg.to(self.device),
+    #             bg_view.to(self.device),
+    #             fg_view.to(self.device),
+    #         )
+    #         torch.cuda.empty_cache()
+    #         self.inception = self.inception.to(self.device)
+    #         fid = calculate_frechet_distance(
+    #             real_images.to(self.device), fake_images, self.inception
+    #         )
+    #         self.inception = self.inception.cpu()
+    #         del real_images, fake_images, z_bg, z_fg, bg_view, fg_view
+    #         torch.cuda.empty_cache()
 
-    def calculate_frechet_distance(self, epoch, it, num_samples=32):
-        num_samples = min(max(num_samples, 2), len(self.dataset))
-        real_images = torch.stack(
-            [self.dataset[i] for i in torch.randint(len(self.dataset), (num_samples,))]
-        )
-        z_bg = sample_z(num_samples, self.generator.z_dim_bg, num_objects=1)
-        z_fg = sample_z(
-            num_samples,
-            self.generator.z_dim_fg,
-            num_objects=torch.randint(3, 11, (1,)).item(),
-            # num_objects=(
-            #     3,
-            #     min(
-            #         10, 3 + 1 * (epoch // self.cfg.train.obj_num_increase_epoch)
-            #     ),
-            # ),
-        )
-        bg_view = sample_view(
-            batch_size=num_samples,
-            num_objects=1,
-            azimuth_range=(-10, 10),
-            elevation_range=(-5, 5),
-            scale_range=(0.9, 1.1),
-        )
-        fg_view = sample_view(
-            batch_size=num_samples,
-            num_objects=z_fg.shape[1],
-            **new_transform_curriculum(epoch),
-        )
-        with torch.no_grad():
-            fake_images = self.generator(
-                z_bg.to(self.device),
-                z_fg.to(self.device),
-                bg_view.to(self.device),
-                fg_view.to(self.device),
-            )
-            torch.cuda.empty_cache()
-            self.inception = self.inception.to(self.device)
-            fid = calculate_frechet_distance(
-                real_images.to(self.device), fake_images, self.inception
-            )
-            self.inception = self.inception.cpu()
-            del real_images, fake_images, z_bg, z_fg, bg_view, fg_view
-            torch.cuda.empty_cache()
-
-        if self.log:
-            self.summary_writer.add_scalar("fid", fid, global_step=self.curr_step + it)
-            self.comet.log_metrics(
-                {"fid": fid}, step=self.curr_step + it, epoch=epoch,
-            )
-        return fid
+    #     if self.log:
+    #         self.summary_writer.add_scalar("fid", fid, global_step=self.curr_step + it)
+    #         self.comet.log_metrics(
+    #             {"fid": fid}, step=self.curr_step + it, epoch=epoch,
+    #         )
+    #     return fid
 
     def log_training(
         self,
-        d_loss,
-        g_loss,
-        fake_images,
-        real_images,
-        d_fake_logits,
-        d_real_logits,
+        recon_loss,
+        presence_kl,
+        scale_kl,
+        center_kl,
+        source_images,
+        reconstructed_images,
+        reconstructed_nobjs,
+        nobjs,
         epoch,
         it,
-        real_are_real,
-        fake_are_fake,
-        l1,
     ):
         if self.log:
             curr_step = self.curr_step + it
-            real_are_real_images, real_are_fake_images = split_images_on_disc(
-                real_images, d_real_logits
-            )
-            fake_are_real_images, fake_are_fake_images = split_images_on_disc(
-                fake_images, d_fake_logits
-            )
-            # with self.summary_writer.as_default():
             self.summary_writer.add_scalar(
-                "losses/d_loss",
-                d_loss,
-                global_step=curr_step,
-                # description="Average of predicting real images as real and fake as fake",
+                "losses/recon_loss", recon_loss, global_step=curr_step,
             )
             self.summary_writer.add_scalar(
-                "losses/g_loss",
-                g_loss,
-                global_step=curr_step,
-                # description="Predicting fake images as real",
+                "losses/presence_kl", presence_kl, global_step=curr_step,
             )
             self.summary_writer.add_scalar(
-                "l1_padded_voxel",
-                l1,
-                global_step=curr_step,
-                # description="Predicting fake images as real",
+                "losses/scale_kl", scale_kl, global_step=curr_step,
             )
             self.summary_writer.add_scalar(
-                "accuracy/real",
-                real_are_real,
-                global_step=curr_step,
-                # description="Real images classified as real",
+                "losses/center_kl", center_kl, global_step=curr_step,
             )
             self.summary_writer.add_scalar(
-                "accuracy/fake",
-                fake_are_fake,
-                global_step=curr_step,
-                # description="Fake images classified as fake",
+                "num_objs", nobjs, global_step=curr_step,
             )
-            if fake_are_fake_images.size(0) > 0:
-                self.summary_writer.add_image(
-                    f"fake/are_fake",
-                    make_grid(fake_are_fake_images),
-                    # max_outputs=25,
-                    global_step=curr_step,
-                    # description="Fake images that the discriminator says are fake",
-                )
-            if fake_are_real_images.size(0) > 0:
-                self.summary_writer.add_image(
-                    f"fake/are_real",
-                    make_grid(fake_are_real_images),
-                    # max_outputs=25,
-                    global_step=curr_step,
-                    # description="Fake images that the discriminator says are real",
-                )
-            if real_are_fake_images.size(0) > 0:
-                self.summary_writer.add_image(
-                    f"real/are_fake",
-                    make_grid(real_are_fake_images),
-                    # max_outputs=25,
-                    global_step=curr_step,
-                    # description="Real images that the discriminator says are fake",
-                )
-            if real_are_real_images.size(0) > 0:
-                self.summary_writer.add_image(
-                    f"real/are_real",
-                    make_grid(real_are_real_images),
-                    # max_outputs=25,
-                    global_step=curr_step,
-                    # description="Real images that the discriminator says are real",
-                )
 
             self.comet.log_metrics(
                 {
-                    "d_loss": d_loss,
-                    "g_loss": g_loss,
-                    "accuracy/real": real_are_real,
-                    "accuracy/fake": fake_are_fake,
-                    "l1_padded_voxel": l1,
+                    "recon_loss": recon_loss,
+                    "presence_kl": presence_kl,
+                    "scale_kl": scale_kl,
+                    "center_kl": center_kl,
+                    "num_objects": nobjs,
                 },
                 step=curr_step,
                 epoch=epoch,
             )
-            fig = show_batch(fake_images, labels=disc_preds_to_label(d_fake_logits))
-            self.comet.log_figure(
-                figure=fig, figure_name="" f"fake", step=curr_step,
+            fig = plt.figure(figsize=(16, 10))
+            plt.imshow(
+                T.functional.to_pil_image(
+                    make_grid(
+                        torch.cat((source_images, reconstructed_images), 0)
+                        .detach()
+                        .cpu(),
+                        nrow=4,
+                    )
+                )
             )
-            plt.close(fig)
-            fig = show_batch(real_images, labels=disc_preds_to_label(d_real_logits))
+            plt.title(
+                "Top: Input, Bottom: Generated\nPredicted nobjs: "
+                + str(reconstructed_nobjs.tolist())
+            )
             self.comet.log_figure(
-                figure=fig, figure_name="" f"real", step=curr_step,
+                figure=fig, figure_name="samples", step=curr_step, epoch=epoch,
             )
             plt.close(fig)
 
