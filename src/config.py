@@ -54,11 +54,15 @@ __C.model = edict(
         use_inverse_transform=False,
     ),
     scene_encoder=edict(
-        ncs=[16, 32, 32, 64, 128, 256],
-        kss=[3, 4, 3, 4, 4, 4, 4],
-        ss=[1, 2, 1, 2, 2, 1],
-        ngs=[4, 8, 4, 8, 8, 16],
-        out_proj_dim=64,
+        z_pres_dim=1,
+        z_depth_dim=1,
+        z_scale_dim=2,
+        z_shift_dim=2,
+        z_what_dim=64,
+        img_feats_nc=128,
+        glimpse_shape=(32, 32),
+        anchor_shape=(48, 48),
+        glimpse_enc_out_proj_dim=256,
     ),
 )
 
@@ -73,9 +77,9 @@ def _merge_a_into_b(a, b):
     for k, v in a.items():
         # a must specify keys that are in b
         if k not in b:
-            # raise KeyError('{} is not a valid config key'.format(k))
-            print("{} is not a valid config key".format(k))
-            continue
+            raise KeyError('{} is not a valid config key'.format(k))
+            # print("{} is not a valid config key".format(k))
+            # continue
 
         # the types must match, too
         old_type = type(b[k])

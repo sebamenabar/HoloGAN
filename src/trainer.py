@@ -224,6 +224,7 @@ class Trainer:
             miniters=50,
         )
         total_recon_loss = 0.0
+        total_kl_loss = 0.0
         total_presence_kl = 0.0
         total_scale_kl = 0.0
         total_center_kl = 0.0
@@ -237,11 +238,13 @@ class Trainer:
             image_batch64 = image_batch64.to(self.device)
             image_batch128 = image_batch128.to(self.device)
 
-            if self.cfg.train.scene_encoder.random_noise or (self.curr_step <= 10000):
+            if self.cfg.train.scene_encoder.random_noise or (self.curr_step <= 40000):
                 image_batch = image_batch128 + torch.normal(
                     0, 0.02, image_batch128.size(), device=self.device
                 )
                 image_batch = image_batch.clamp(0, 1)
+            else:
+                image_batch = image_batch128
             encoded_scene = self.scene_encoder(image_batch)
             z_bg = encoded_scene["bg_feats"]
             view_in_bg = encoded_scene["bg_transform_params"]
@@ -282,6 +285,7 @@ class Trainer:
             self.scene_encoder.zero_grad()
 
             total_recon_loss += recon_loss.detach().cpu().numpy()
+            total_kl_loss += kl_loss.detach().cpu().numpy()
             total_presence_kl += presence_kl.detach().cpu().numpy()
             total_scale_kl += scale_kl.detach().cpu().numpy()
             total_center_kl += center_kl.detach().cpu().numpy()
@@ -289,11 +293,12 @@ class Trainer:
             total_num_objs += nobjs
 
             pbar.set_postfix(
-                recon=f"{recon_loss.detach().cpu().numpy():.3f}({total_recon_loss / (counter):.3f})",
-                presence=f"{presence_kl.detach().cpu().numpy():.1E}({total_presence_kl / (counter):.1E})",
-                scale=f"{scale_kl.detach().cpu().numpy():.3f}({total_scale_kl / (counter):.3f})",
-                center=f"{center_kl.detach().cpu().numpy():.2f}({total_center_kl / (counter):.2f})",
-                nobjs=f"{nobjs}({total_num_objs / (counter):.1f})",
+                r=f"{recon_loss.detach().cpu().numpy():.3f}({total_recon_loss / (counter):.3f})",
+                kl=f"{kl_loss.detach().cpu().numpy():.1E}({total_kl_loss / (counter):.1E})",
+                p=f"{presence_kl.detach().cpu().numpy():.1E}({total_presence_kl / (counter):.1E})",
+                s=f"{scale_kl.detach().cpu().numpy():.3f}({total_scale_kl / (counter):.3f})",
+                c=f"{center_kl.detach().cpu().numpy():.2f}({total_center_kl / (counter):.2f})",
+                no=f"{nobjs}({total_num_objs / (counter):.1f})",
                 refresh=False,
             )
 
@@ -301,6 +306,7 @@ class Trainer:
 
                 self.log_training(
                     recon_loss=total_recon_loss / counter,
+                    kl_loss=total_kl_loss / counter,
                     presence_kl=total_presence_kl / counter,
                     scale_kl=total_scale_kl / counter,
                     center_kl=total_center_kl / counter,
@@ -313,6 +319,7 @@ class Trainer:
                 )
 
                 total_recon_loss = 0.0
+                total_kl_loss = 0.0
                 total_presence_kl = 0.0
                 total_scale_kl = 0.0
                 total_center_kl = 0.0
@@ -376,6 +383,7 @@ class Trainer:
     def log_training(
         self,
         recon_loss,
+        kl_loss,
         presence_kl,
         scale_kl,
         center_kl,
@@ -390,6 +398,9 @@ class Trainer:
             curr_step = self.curr_step + it
             self.summary_writer.add_scalar(
                 "losses/recon_loss", recon_loss, global_step=curr_step,
+            )
+            self.summary_writer.add_scalar(
+                "losses/kl_loss", kl_loss, global_step=curr_step,
             )
             self.summary_writer.add_scalar(
                 "losses/presence_kl", presence_kl, global_step=curr_step,
@@ -407,6 +418,7 @@ class Trainer:
             self.comet.log_metrics(
                 {
                     "recon_loss": recon_loss,
+                    "kl_loss": kl_loss,
                     "presence_kl": presence_kl,
                     "scale_kl": scale_kl,
                     "center_kl": center_kl,
@@ -422,7 +434,7 @@ class Trainer:
                         torch.cat((source_images, reconstructed_images), 0)
                         .detach()
                         .cpu(),
-                        nrow=4,
+                        nrow=self.cfg.train.batch_size,
                     )
                 )
             )
@@ -430,8 +442,11 @@ class Trainer:
                 "Top: Input, Bottom: Generated\nPredicted nobjs: "
                 + str(reconstructed_nobjs.tolist())
             )
+            self.summary_writer.add_figure(
+                "recons", fig, global_step=curr_step, close=False,
+            )
             self.comet.log_figure(
-                figure=fig, figure_name="samples", step=curr_step, epoch=epoch,
+                figure=fig, figure_name="recons", step=curr_step,
             )
             plt.close(fig)
 

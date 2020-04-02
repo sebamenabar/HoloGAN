@@ -1,30 +1,25 @@
-run_name: 'wo-transform'
-experiment_name: 'torch-fix'
-comet_project_name: 'torch-fix'
+run_name: 'run-1'
+experiment_name: 'v0.1'
+comet_project_name: 'space-3d'
 cuda: True
 gpu_id: '0'
 num_workers: 4
 
 train:
   data_dir: '/mnt/ialabnas/datasets/CLEVR_v1.0/images/train'
-  batch_size: 32
-  epochs: 100
+  batch_size: 4
+  epochs: 20
   snapshot_interval: 5
-  image_height: 64
-  image_width: 64
-  it_log_interval: 200
-  obj_num_increase_epoch: 1
+  it_log_interval: 1000
   generator:
     optimizer:
-      lr: 0.0001
+      lr: 0.0005
       betas: [0.5, 0.999]
-    update_freq: 2
-    fixed_z: False
-  discriminator:
+  scene_encoder:
     optimizer:
-      lr: 0.0001
+      lr: 0.0005
       betas: [0.5, 0.999]
-    random_noise: False
+    kl_weight: 0.000001
 
 model:
   generator:
@@ -35,8 +30,5 @@ model:
     filters: [64, 64]
     ks: [4, 4]
     strides: [2, 2]
-    use_learnable_proj: True
-  discriminator:
-    filters: [64, 128, 256, 512]
-    ks: [5, 5, 5, 5]
-    strides: [2, 2, 2, 2]
+    use_learnable_proj: False
+    use_inverse_transform: False
