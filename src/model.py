@@ -128,7 +128,7 @@ class ObjectGenerator(nn.Module):
             h = transform_voxel_to_match_image(h)
 
             out = h
-        else:
+        elif view_in is not None:
             if self.use_inverse_transform:
                 A = generate_inv_transform_matrix(view_in)
             else:
@@ -136,9 +136,11 @@ class ObjectGenerator(nn.Module):
             A = A[:, :3]
             grid = nn.functional.affine_grid(A, h.size(), align_corners=False)
             h_rotated = nn.functional.grid_sample(h, grid, align_corners=False)
-            h_rotated = transform_voxel_to_match_image(h_rotated,)
+            # h_rotated = transform_voxel_to_match_image(h_rotated,)
 
             out = h_rotated
+        else:
+            out = h
 
         return out.view(bsz, num_objs, *out.size()[1:])
 
@@ -155,8 +157,8 @@ class Generator(nn.Module):
         strides=[2, 2],
         upconv_paddings=[1, 1],
         upconv_out_paddings=[0, 0],
-        use_learnable_proj=True,
-        use_inverse_transform=True,
+        use_learnable_proj=False,
+        use_inverse_transform=False,
     ):
         super().__init__()
 
@@ -266,7 +268,8 @@ class Discriminator(nn.Module):
         filters=[64, 128, 256, 512],
         ks=[5, 5, 5, 5],
         strides=[2, 2, 2, 2],
-        random_noise=True,
+        random_noise=False,
+        num_out_features=3,
     ):
         super().__init__()
 
@@ -274,7 +277,7 @@ class Discriminator(nn.Module):
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
         convs = []
         inst_norms = []
-        prev_out_channels = 3
+        prev_out_channels = 6
         for f, k, s in zip(filters, ks, strides):
             convs.append(
                 nn.utils.spectral_norm(
@@ -297,7 +300,9 @@ class Discriminator(nn.Module):
         self.convs = nn.ModuleList(convs)
         self.inst_norms = nn.ModuleList(inst_norms)
         self.linear = nn.utils.spectral_norm(
-            nn.Linear(in_features=prev_out_channels * 4 * 4, out_features=1)
+            nn.Linear(
+                in_features=prev_out_channels * 4 * 4, out_features=num_out_features
+            )  # images are the same, first image is real, second image is real
         )
 
         self.style_discriminator = style_discriminator
@@ -307,7 +312,7 @@ class Discriminator(nn.Module):
             for f in filters:
                 style_classifiers.append(
                     nn.utils.spectral_norm(
-                        nn.Linear(in_features=2 * f, out_features=1,)
+                        nn.Linear(in_features=2 * f, out_features=num_out_features,)
                     )
                 )
             self.style_classifiers = nn.ModuleList(style_classifiers)
